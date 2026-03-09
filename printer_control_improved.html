@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>打印机控制系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #3b82f6;
+            --primary-dark: #1e40af;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --gray-900: #111827;
+            --gray-800: #1f2937;
+            --gray-700: #374151;
+            --gray-600: #4b5563;
+            --gray-300: #d1d5db;
+            --gray-200: #e5e7eb;
+            --gray-100: #f3f4f6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--gray-900);
+            color: var(--gray-200);
+            overflow: hidden;
+        }
+
+        /* 登录页面 */
+        .login-container {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--gray-900) 0%, var(--gray-800) 100%);
+            z-index: 1000;
+            transition: opacity 0.3s;
+        }
+
+        .login-container.hidden {
+            display: none;
+        }
+
+        .login-box {
+            background: var(--gray-800);
+            border: 1px solid var(--gray-700);
+            border-radius: 8px;
+            padding: 40px;
+            width: 360px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .login-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--gray-300);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--gray-700);
+            border: 1px solid var(--gray-600);
+            border-radius: 6px;
+            color: var(--gray-100);
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            width: 100%;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-primary:active {
+            transform: scale(0.98);
+        }
+
+        .btn-secondary {
+            background: var(--gray-700);
+            color: var(--gray-100);
+        }
+
+        .btn-secondary:hover {
+            background: var(--gray-600);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .error-msg {
+            color: var(--danger);
+            font-size: 13px;
+            margin-top: 8px;
+            min-height: 20px;
+        }
+
+        /* 主容器 */
+        .container {
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* 侧边栏 */
+        .sidebar {
+            width: 240px;
+            background: var(--gray-800);
+            border-right: 1px solid var(--gray-700);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--gray-700);
+        }
+
+        .sidebar-brand {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .sidebar-subtitle {
+            font-size: 12px;
+            color: var(--gray-400);
+            margin-top: 4px;
+        }
+
+        .nav-menu {
+            flex: 1;
+            padding: 16px 0;
+        }
+
+        .nav-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--gray-400);
+            padding: 12px 20px 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .nav-item {
+            padding: 10px 20px;
+            cursor: pointer;
+            color: var(--gray-300);
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            user-select: none;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover {
+            background: var(--gray-700);
+            color: var(--gray-100);
+        }
+
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.1);
+            color: var(--primary);
+            border-left-color: var(--primary);
+        }
+
+        .nav-item-icon {
+            font-size: 16px;
+            width: 20px;
+            text-align: center;
+        }
+
+        .sidebar-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--gray-700);
+        }
+
+        .user-info {
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .user-name {
+            font-weight: 600;
+            color: var(--gray-100);
+        }
+
+        .user-role {
+            font-size: 11px;
+            color: var(--gray-400);
+            margin-top: 2px;
+        }
+
+        .btn-logout {
+            width: 100%;
+        }
+
+        /* 主内容 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .page-header {
+            background: var(--gray-800);
+            border-bottom: 1px solid var(--gray-700);
+            padding: 16px 24px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .header-title {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .header-subtitle {
+            font-size: 13px;
+            color: var(--gray-400);
+            margin-top: 4px;
+        }
+
+        .page-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .page {
+            display: none;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        .page.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* 网格布局 */
+        .grid {
+            display: grid;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+        .grid-4 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+        /* 卡片 */
+        .card {
+            background: var(--gray-800);
+            border: 1px solid var(--gray-700);
+            border-radius: 8px;
+            padding: 20px;
+            transition: all 0.2s;
+        }
+
+        .card:hover {
+            border-color: var(--gray-600);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--gray-400);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--gray-400);
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-idle {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+        }
+
+        .status-printing {
+            background: rgba(59, 130, 246, 0.1);
+            color: var(--primary);
+            animation: pulse 2s infinite;
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+        }
+
+        .status-paused {
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--warning);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        /* 进度条 */
+        .progress-container {
+            margin-top: 12px;
+        }
+
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--gray-400);
+            margin-bottom: 6px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: var(--gray-700);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--primary);
+            transition: width 0.3s;
+        }
+
+        .progress-fill.success { background: var(--success); }
+        .progress-fill.warning { background: var(--warning); }
+        .progress-fill.danger { background: var(--danger); }
+
+        /* 表格 */
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: var(--gray-700);
+            border-bottom: 2px solid var(--gray-600);
+        }
+
+        th {
+            padding: 12px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--gray-300);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--gray-700);
+            font-size: 13px;
+        }
+
+        tbody tr:hover {
+            background: var(--gray-700);
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 6px;
+        }
+
+        /* 表单 */
+        .form-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+            min-width: 200px;
+            margin-bottom: 0;
+        }
+
+        .form-section {
+            background: var(--gray-800);
+            border: 1px solid var(--gray-700);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .form-section-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 16px;
+        }
+
+        /* 通知 */
+        .toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 2000;
+        }
+
+        .toast {
+            background: var(--gray-800);
+            border: 1px solid var(--gray-700);
+            border-radius: 6px;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            min-width: 300px;
+            max-width: 500px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideIn 0.3s ease-out;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .toast-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .toast-message {
+            flex: 1;
+        }
+
+        .toast-success {
+            border-left: 3px solid var(--success);
+        }
+
+        .toast-success .toast-icon {
+            color: var(--success);
+        }
+
+        .toast-error {
+            border-left: 3px solid var(--danger);
+        }
+
+        .toast-error .toast-icon {
+            color: var(--danger);
+        }
+
+        .toast-warning {
+            border-left: 3px solid var(--warning);
+        }
+
+        .toast-warning .toast-icon {
+            color: var(--warning);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        /* 模态框 */
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--gray-800);
+            border-radius: 8px;
+            border: 1px solid var(--gray-700);
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--gray-700);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--gray-400);
+            cursor: pointer;
+            font-size: 24px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: var(--gray-100);
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--gray-700);
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+
+        /* 加载状态 */
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 60px;
+            }
+
+            .nav-item {
+                padding: 12px 0;
+                justify-content: center;
+            }
+
+            .nav-item-label {
+                display: none;
+            }
+
+            .grid-2, .grid-3, .grid-4 {
+                grid-template-columns: 1fr;
+            }
+
+            .toast {
+                min-width: 250px;
+                max-width: calc(100% - 32px);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 登录页 -->
+    <div class="login-container" id="loginContainer">
+        <div class="login-box">
+            <div class="login-title">打印机控制系统</div>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" id="username" placeholder="输入用户名" required>
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="password" placeholder="输入密码" required>
+                </div>
+                <button type="submit" class="btn btn-primary">登 录</button>
+                <div class="error-msg" id="loginError"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div class="container" id="mainContainer" style="display: none;">
+        <!-- 侧边栏 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">📠 打印机系统</div>
+                <div class="sidebar-subtitle">v1.0</div>
+            </div>
+            <div class="nav-menu">
+                <div class="nav-section-title">主菜单</div>
+                <div class="nav-item active" data-page="dashboard">
+                    <span class="nav-item-icon">📊</span>
+                    <span class="nav-item-label">仪表板</span>
+                </div>
+                <div class="nav-item" data-page="submit-job">
+                    <span class="nav-item-icon">📄</span>
+                    <span class="nav-item-label">提交任务</span>
+                </div>
+                <div class="nav-item" data-page="jobs">
+                    <span class="nav-item-icon">⏳</span>
+                    <span class="nav-item-label">任务管理</span>
+                </div>
+                <div class="nav-item" data-page="history">
+                    <span class="nav-item-icon">📋</span>
+                    <span class="nav-item-label">打印历史</span>
+                </div>
+                <div class="nav-item" data-page="maintenance">
+                    <span class="nav-item-icon">🔧</span>
+                    <span class="nav-item-label">维护</span>
+                </div>
+                <div id="adminMenu" style="display: none;">
+                    <div class="nav-section-title">管理员</div>
+                    <div class="nav-item" data-page="users">
+                        <span class="nav-item-icon">👥</span>
+                        <span class="nav-item-label">用户管理</span>
+                    </div>
+                    <div class="nav-item" data-page="diagnostics">
+                        <span class="nav-item-icon">🔍</span>
+                        <span class="nav-item-label">诊断</span>
+                    </div>
+                </div>
+            </div>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-name" id="userName">--</div>
+                    <div class="user-role" id="userRole">--</div>
+                </div>
+                <button class="btn btn-secondary btn-logout" id="logoutBtn">登 出</button>
+            </div>
+        </div>
+
+        <!-- 主内容 -->
+        <div class="main-content">
+            <div class="page-header">
+                <div class="header-title" id="pageTitle">仪表板</div>
+                <div class="header-subtitle" id="pageSubtitle">查看打印机状态和实时信息</div>
+            </div>
+
+            <div class="page-content">
+                <!-- 仪表板页 -->
+                <div class="page active" id="dashboard">
+                    <div class="grid grid-4">
+                        <div class="card">
+                            <div class="card-title">打印机状态</div>
+                            <div class="stat-value" id="printerStatus">--</div>
+                            <div class="stat-label"><span class="status-badge" id="statusBadge" class="status-idle">● 就绪</span></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">纸张剩余</div>
+                            <div class="stat-value" id="paperPages">--</div>
+                            <div class="stat-label">页</div>
+                            <div class="progress-container">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="paperProgress" style="width: 80%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">碳粉百分比</div>
+                            <div class="stat-value" id="tonerPercent">--</div>
+                            <div class="stat-label">%</div>
+                            <div class="progress-container">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="tonerProgress" style="width: 85%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">队列任务</div>
+                            <div class="stat-value" id="queueSize">0</div>
+                            <div class="stat-label">个待打印</div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">累计打印</div>
+                            <div class="stat-value" id="totalPages">--</div>
+                            <div class="stat-label">页</div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">打印头温度</div>
+                            <div class="stat-value" id="temperature">--</div>
+                            <div class="stat-label">°C</div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">固件版本</div>
+                            <div class="stat-value" style="font-size: 18px;" id="firmwareVersion">--</div>
+                            <div class="stat-label"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">硬件错误</div>
+                            <div class="stat-value" id="errorStatus">--</div>
+                            <div class="stat-label" style="color: var(--danger);" id="errorDetail"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 提交任务页 -->
+                <div class="page" id="submit-job">
+                    <div class="form-section">
+                        <div class="form-section-title">提交新打印任务</div>
+                        <form id="submitJobForm">
+                            <div class="form-group">
+                                <label>文件名</label>
+                                <input type="text" id="jobFilename" placeholder="例如: document.pdf" required>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>页数</label>
+                                    <input type="number" id="jobPages" min="1" max="10000" value="10" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>优先级</label>
+                                    <select id="jobPriority">
+                                        <option value="1">低</option>
+                                        <option value="5" selected>中</option>
+                                        <option value="10">高</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-success" style="width: 100%;">提 交 任 务</button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- 任务管理页 -->
+                <div class="page" id="jobs">
+                    <div class="form-row">
+                        <div style="flex: 1;"></div>
+                        <button class="btn btn-secondary btn-small" id="refreshQueueBtn">刷新队列</button>
+                    </div>
+                    <div class="card">
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>任务ID</th>
+                                        <th>文件名</th>
+                                        <th>页数</th>
+                                        <th>优先级</th>
+                                        <th>状态</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="jobsTableBody">
+                                    <tr>
+                                        <td colspan="6" style="text-align: center; color: var(--gray-400);">无任务</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 打印历史页 -->
+                <div class="page" id="history">
+                    <div class="form-row">
+                        <div style="flex: 1;"></div>
+                        <button class="btn btn-secondary btn-small" id="refreshHistoryBtn">刷新历史</button>
+                    </div>
+                    <div class="card">
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>任务ID</th>
+                                        <th>文件名</th>
+                                        <th>页数</th>
+                                        <th>已打印</th>
+                                        <th>状态</th>
+                                        <th>创建时间</th>
+                                        <th>用户</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="historyTableBody">
+                                    <tr>
+                                        <td colspan="7" style="text-align: center; color: var(--gray-400);">无历史记录</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 维护页 -->
+                <div class="page" id="maintenance">
+                    <div class="grid grid-2">
+                        <div class="form-section">
+                            <div class="form-section-title">🧻 纸张管理</div>
+                            <div class="form-group">
+                                <label>补充纸张（页数）</label>
+                                <input type="number" id="refillPaperPages" min="100" max="50000" value="500" step="100">
+                            </div>
+                            <button class="btn btn-warning" style="width: 100%;" id="refillPaperBtn">补充纸张</button>
+                        </div>
+
+                        <div class="form-section">
+                            <div class="form-section-title">🫙 碳粉管理</div>
+                            <div style="padding: 12px 0; text-align: center; color: var(--gray-400);">点击按钮将碳粉充至100%</div>
+                            <button class="btn btn-warning" style="width: 100%;" id="refillTonerBtn">补充碳粉</button>
+                        </div>
+
+                        <div class="form-section">
+                            <div class="form-section-title">⚠️ 错误清除</div>
+                            <div style="padding: 12px 0; text-align: center; color: var(--gray-400);">清除所有硬件错误状态</div>
+                            <button class="btn btn-success" style="width: 100%;" id="clearErrorBtn">清除错误</button>
+                        </div>
+
+                        <div class="form-section" id="simulateErrorSection" style="display: none;">
+                            <div class="form-section-title">🧪 错误模拟（仅管理员）</div>
+                            <div class="form-group">
+                                <label>选择模拟错误</label>
+                                <select id="simulateErrorType">
+                                    <option value="">-- 选择错误类型 --</option>
+                                    <option value="PAPER_EMPTY">缺纸</option>
+                                    <option value="TONER_LOW">碳粉不足</option>
+                                    <option value="TONER_EMPTY">缺碳粉</option>
+                                    <option value="HEAT_UNAVAILABLE">加热器故障</option>
+                                    <option value="MOTOR_FAILURE">电机故障</option>
+                                    <option value="SENSOR_FAILURE">传感器故障</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-danger" style="width: 100%;" id="simulateErrorBtn">模拟错误</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 用户管理页 -->
+                <div class="page" id="users">
+                    <div class="grid grid-2">
+                        <div class="form-section">
+                            <div class="form-section-title">➕ 添加新用户</div>
+                            <form id="addUserForm">
+                                <div class="form-group">
+                                    <label>用户名</label>
+                                    <input type="text" id="newUsername" placeholder="新用户名" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>密码</label>
+                                    <input type="password" id="newPassword" placeholder="密码" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>角色</label>
+                                    <select id="newUserRole">
+                                        <option value="user">普通用户</option>
+                                        <option value="technician">技术员</option>
+                                        <option value="admin">管理员</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-success" style="width: 100%;">添加用户</button>
+                            </form>
+                        </div>
+
+                        <div class="form-section">
+                            <div class="form-section-title">👥 用户列表</div>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>用户名</th>
+                                        <th>角色</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="usersTableBody">
+                                    <tr>
+                                        <td colspan="3" style="text-align: center; color: var(--gray-400);">加载中...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 诊断页 -->
+                <div class="page" id="diagnostics">
+                    <div class="card">
+                        <div class="card-title">系统诊断信息</div>
+                        <pre id="diagnosticsOutput" style="background: var(--gray-700); padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 12px; color: var(--gray-300);">加载中...</pre>
+                        <button class="btn btn-secondary" style="margin-top: 16px;" id="refreshDiagnosticsBtn">刷新诊断</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通知容器 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // ===================== 配置 =====================
+        const API_BASE = 'http://localhost:8080';
+        const WS_URL = 'ws://localhost:8080/ws';
+
+        // ===================== 状态管理 =====================
+        let currentUser = null;
+        let authToken = null;
+        let ws = null;
+        let printerStatus = null;
+
+        // ===================== 工具函数 =====================
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            const icons = { success: '✓', error: '✕', warning: '⚠' };
+            toast.innerHTML = `
+                <span class="toast-icon">${icons[type]}</span>
+                <span class="toast-message">${message}</span>
+            `;
+            document.getElementById('toastContainer').appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        async function apiCall(endpoint, method = 'GET', data = null) {
+            const options = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            };
+            if (authToken) {
+                options.headers['Authorization'] = `Bearer ${authToken}`;
+            }
+            if (data) options.body = JSON.stringify(data);
+
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, options);
+                if (!response.ok) {
+                    if (response.status === 401) logout();
+                    const errData = await response.text();
+                    throw new Error(errData || `HTTP ${response.status}`);
+                }
+                return await response.json();
+            } catch (err) {
+                console.error('API Error:', err);
+                throw err;
+            }
+        }
+
+        function formatDate(isoString) {
+            return new Date(isoString).toLocaleString('zh-CN');
+        }
+
+        function getStatusBadgeClass(status) {
+            const map = {
+                'idle': 'status-idle',
+                'printing': 'status-printing',
+                'error': 'status-error',
+                'paused': 'status-paused'
+            };
+            return map[status] || 'status-idle';
+        }
+
+        // ===================== 页面导航 =====================
+        function navigateTo(page) {
+            // 隐藏所有页面
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            // 显示指定页面
+            document.getElementById(page)?.classList.add('active');
+
+            // 更新导航菜单
+            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+            document.querySelector(`[data-page="${page}"]`)?.classList.add('active');
+
+            // 更新页面标题
+            const titles = {
+                'dashboard': ['仪表板', '查看打印机状态和实时信息'],
+                'submit-job': ['提交任务', '提交新的打印任务'],
+                'jobs': ['任务管理', '管理打印队列中的任务'],
+                'history': ['打印历史', '查看历史打印记录'],
+                'maintenance': ['维护', '进行维护操作'],
+                'users': ['用户管理', '管理系统用户'],
+                'diagnostics': ['诊断', '系统诊断和调试信息']
+            };
+            if (titles[page]) {
+                document.getElementById('pageTitle').textContent = titles[page][0];
+                document.getElementById('pageSubtitle').textContent = titles[page][1];
+            }
+
+            // 加载页面数据
+            if (page === 'jobs') loadJobs();
+            if (page === 'history') loadHistory();
+            if (page === 'users') loadUsers();
+            if (page === 'diagnostics') loadDiagnostics();
+        }
+
+        // ===================== 认证 =====================
+        async function login(username, password) {
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!response.ok) {
+                    throw new Error('登录失败');
+                }
+
+                const data = await response.json();
+                authToken = data.token;
+                currentUser = { username, role: data.role };
+
+                localStorage.setItem('authToken', authToken);
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+                showLoginUI(false);
+                initializeApp();
+            } catch (err) {
+                document.getElementById('loginError').textContent = err.message;
+            }
+        }
+
+        function logout() {
+            authToken = null;
+            currentUser = null;
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('currentUser');
+            if (ws) ws.close();
+            showLoginUI(true);
+        }
+
+        function showLoginUI(show) {
+            document.getElementById('loginContainer').style.display = show ? 'flex' : 'none';
+            document.getElementById('mainContainer').style.display = show ? 'none' : 'flex';
+        }
+
+        // ===================== 初始化 =====================
+        function initializeApp() {
+            // 更新用户信息
+            document.getElementById('userName').textContent = currentUser.username;
+            document.getElementById('userRole').textContent = currentUser.role;
+
+            // 显示管理员菜单
+            if (currentUser.role === 'admin') {
+                document.getElementById('adminMenu').style.display = 'block';
+                document.getElementById('simulateErrorSection').style.display = 'block';
+            }
+
+            // 加载初始状态
+            refreshPrinterStatus();
+            connectWebSocket();
+            navigateTo('dashboard');
+        }
+
+        // ===================== 打印机状态 =====================
+        async function refreshPrinterStatus() {
+            try {
+                const status = await apiCall('/api/status');
+                printerStatus = status;
+                updateStatusUI(status);
+                // 每3秒刷新一次
+                setTimeout(refreshPrinterStatus, 3000);
+            } catch (err) {
+                console.error('Failed to refresh status:', err);
+            }
+        }
+
+        function updateStatusUI(status) {
+            // 更新各种状态字段
+            const statusMap = {
+                'idle': '就绪',
+                'printing': '正在打印',
+                'error': '错误',
+                'paused': '已暂停',
+                'offline': '离线'
+            };
+
+            const printerStatusText = statusMap[status.status] || status.status || '--';
+            document.getElementById('printerStatus').textContent = printerStatusText;
+
+            const badgeEl = document.getElementById('statusBadge');
+            badgeEl.className = `status-badge ${getStatusBadgeClass(status.status)}`;
+            badgeEl.innerHTML = `● ${printerStatusText}`;
+
+            document.getElementById('paperPages').textContent = status.paper_pages || '--';
+            const paperPercent = status.paper_pages ? Math.min((status.paper_pages / 500) * 100, 100) : 0;
+            document.getElementById('paperProgress').style.width = paperPercent + '%';
+
+            document.getElementById('tonerPercent').textContent = status.toner_percentage || '--';
+            document.getElementById('tonerProgress').style.width = (status.toner_percentage || 0) + '%';
+
+            const tonerClass = (status.toner_percentage || 0) > 50 ? '' : (status.toner_percentage > 20 ? 'warning' : 'danger');
+            if (tonerClass) document.getElementById('tonerProgress').className = 'progress-fill ' + tonerClass;
+
+            document.getElementById('totalPages').textContent = status.page_count || '--';
+            document.getElementById('temperature').textContent = status.temperature || '--';
+            document.getElementById('firmwareVersion').textContent = status.firmware_version || '--';
+
+            if (status.error !== 'HARDWARE_OK' && status.error) {
+                const errorMap = {
+                    'ERROR_PAPER_EMPTY': '缺纸',
+                    'ERROR_TONER_LOW': '碳粉不足',
+                    'ERROR_TONER_EMPTY': '缺碳粉',
+                    'ERROR_HEAT_UNAVAILABLE': '加热器故障',
+                    'ERROR_MOTOR_FAILURE': '电机故障',
+                    'ERROR_SENSOR_FAILURE': '传感器故障'
+                };
+                document.getElementById('errorStatus').textContent = '⚠️ 错误';
+                document.getElementById('errorDetail').textContent = errorMap[status.error] || status.error;
+            } else {
+                document.getElementById('errorStatus').textContent = '✓ 正常';
+                document.getElementById('errorDetail').textContent = '';
+            }
+        }
+
+        // ===================== 任务管理 =====================
+        async function loadJobs() {
+            try {
+                const data = await apiCall('/api/queue');
+                const tbody = document.getElementById('jobsTableBody');
+                if (!data.queue || data.queue.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--gray-400);">无任务</td></tr>';
+                    document.getElementById('queueSize').textContent = '0';
+                    return;
+                }
+
+                document.getElementById('queueSize').textContent = data.queue_size || 0;
+
+                tbody.innerHTML = data.queue.map(job => `
+                    <tr>
+                        <td>${job.task_id}</td>
+                        <td>${job.filename}</td>
+                        <td>${job.pages}</td>
+                        <td>${job.priority || 5}</td>
+                        <td><span class="status-badge ${getStatusBadgeClass(job.status)}">● ${job.status}</span></td>
+                        <td>
+                            <div class="action-buttons">
+                                ${job.status === 'printing' ? `
+                                    <button class="btn btn-small btn-warning" onclick="pauseJob(${job.task_id})">暂停</button>
+                                ` : job.status === 'paused' ? `
+                                    <button class="btn btn-small btn-success" onclick="resumeJob(${job.task_id})">恢复</button>
+                                ` : ''}
+                                <button class="btn btn-small btn-danger" onclick="cancelJob(${job.task_id})">取消</button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                showToast('加载队列失败: ' + err.message, 'error');
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const data = await apiCall('/api/history');
+                const tbody = document.getElementById('historyTableBody');
+                if (!data.history || data.history.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--gray-400);">无历史记录</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.history.map(job => `
+                    <tr>
+                        <td>${job.task_id}</td>
+                        <td>${job.filename}</td>
+                        <td>${job.pages}</td>
+                        <td>${job.printed_pages || 0}</td>
+                        <td><span class="status-badge ${getStatusBadgeClass(job.status)}">● ${job.status}</span></td>
+                        <td>${formatDate(job.created_at)}</td>
+                        <td>${job.user_id}</td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                showToast('加载历史失败: ' + err.message, 'error');
+            }
+        }
+
+        async function submitJob(e) {
+            e.preventDefault();
+            const filename = document.getElementById('jobFilename').value;
+            const pages = parseInt(document.getElementById('jobPages').value);
+            const priority = parseInt(document.getElementById('jobPriority').value);
+
+            try {
+                await apiCall('/api/job/submit', 'POST', { filename, pages, priority });
+                showToast('任务已提交');
+                document.getElementById('submitJobForm').reset();
+                loadJobs();
+            } catch (err) {
+                showToast('提交失败: ' + err.message, 'error');
+            }
+        }
+
+        async function cancelJob(taskId) {
+            if (!confirm('确定要取消此任务吗？')) return;
+            try {
+                await apiCall('/api/job/cancel', 'POST', { task_id: taskId });
+                showToast('任务已取消');
+                loadJobs();
+            } catch (err) {
+                showToast('取消失败: ' + err.message, 'error');
+            }
+        }
+
+        async function pauseJob(taskId) {
+            try {
+                await apiCall('/api/job/pause', 'POST', { task_id: taskId });
+                showToast('任务已暂停');
+                loadJobs();
+            } catch (err) {
+                showToast('暂停失败: ' + err.message, 'error');
+            }
+        }
+
+        async function resumeJob(taskId) {
+            try {
+                await apiCall('/api/job/resume', 'POST', { task_id: taskId });
+                showToast('任务已恢复');
+                loadJobs();
+            } catch (err) {
+                showToast('恢复失败: ' + err.message, 'error');
+            }
+        }
+
+        // ===================== 维护操作 =====================
+        async function refillPaper() {
+            const pages = parseInt(document.getElementById('refillPaperPages').value);
+            try {
+                await apiCall('/api/supplies/refill-paper', 'POST', { pages });
+                showToast('纸张已补充');
+                refreshPrinterStatus();
+            } catch (err) {
+                showToast('补充失败: ' + err.message, 'error');
+            }
+        }
+
+        async function refillToner() {
+            try {
+                await apiCall('/api/supplies/refill-toner', 'POST', {});
+                showToast('碳粉已补充');
+                refreshPrinterStatus();
+            } catch (err) {
+                showToast('补充失败: ' + err.message, 'error');
+            }
+        }
+
+        async function clearError() {
+            try {
+                await apiCall('/api/error/clear', 'POST', {});
+                showToast('错误已清除');
+                refreshPrinterStatus();
+            } catch (err) {
+                showToast('清除失败: ' + err.message, 'error');
+            }
+        }
+
+        async function simulateError() {
+            const errorType = document.getElementById('simulateErrorType').value;
+            if (!errorType) {
+                showToast('请选择错误类型', 'warning');
+                return;
+            }
+            try {
+                await apiCall('/api/error/simulate', 'POST', { error: errorType });
+                showToast('错误已模拟');
+                refreshPrinterStatus();
+            } catch (err) {
+                showToast('模拟失败: ' + err.message, 'error');
+            }
+        }
+
+        // ===================== 用户管理 =====================
+        async function loadUsers() {
+            try {
+                const data = await apiCall('/api/user/list');
+                const tbody = document.getElementById('usersTableBody');
+                if (!data.users || data.users.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--gray-400);">无用户</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.users.map(user => `
+                    <tr>
+                        <td>${user.username}</td>
+                        <td><span class="status-badge">${user.role}</span></td>
+                        <td>
+                            <button class="btn btn-small btn-danger" onclick="deleteUser('${user.username}')">删除</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                showToast('加载用户列表失败: ' + err.message, 'error');
+            }
+        }
+
+        async function addUser(e) {
+            e.preventDefault();
+            const username = document.getElementById('newUsername').value;
+            const password = document.getElementById('newPassword').value;
+            const role = document.getElementById('newUserRole').value;
+
+            try {
+                await apiCall('/api/user/add', 'POST', { username, password, role });
+                showToast('用户已添加');
+                document.getElementById('addUserForm').reset();
+                loadUsers();
+            } catch (err) {
+                showToast('添加失败: ' + err.message, 'error');
+            }
+        }
+
+        async function deleteUser(username) {
+            if (!confirm(`确定要删除用户 ${username} 吗？`)) return;
+            try {
+                await apiCall('/api/user/delete', 'DELETE', { username });
+                showToast('用户已删除');
+                loadUsers();
+            } catch (err) {
+                showToast('删除失败: ' + err.message, 'error');
+            }
+        }
+
+        // ===================== 诊断 =====================
+        async function loadDiagnostics() {
+            try {
+                const status = await apiCall('/api/status');
+                const output = JSON.stringify(status, null, 2);
+                document.getElementById('diagnosticsOutput').textContent = output;
+            } catch (err) {
+                document.getElementById('diagnosticsOutput').textContent = '加载失败: ' + err.message;
+            }
+        }
+
+        // ===================== WebSocket =====================
+        function connectWebSocket() {
+            ws = new WebSocket(WS_URL);
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('WebSocket message:', data);
+                if (data.event === 'job_submitted') {
+                    showToast(`任务 ${data.task_id} 已提交`);
+                    loadJobs();
+                } else if (data.event === 'job_completed') {
+                    showToast(`任务 ${data.task_id} 已完成`);
+                    loadJobs();
+                }
+            };
+            ws.onclose = () => {
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        // ===================== 事件监听 =====================
+        document.getElementById('loginForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            login(username, password);
+        });
+
+        document.getElementById('logoutBtn').addEventListener('click', logout);
+        document.getElementById('submitJobForm').addEventListener('submit', submitJob);
+        document.getElementById('addUserForm').addEventListener('submit', addUser);
+
+        document.getElementById('refillPaperBtn').addEventListener('click', refillPaper);
+        document.getElementById('refillTonerBtn').addEventListener('click', refillToner);
+        document.getElementById('clearErrorBtn').addEventListener('click', clearError);
+        document.getElementById('simulateErrorBtn').addEventListener('click', simulateError);
+
+        document.getElementById('refreshQueueBtn').addEventListener('click', loadJobs);
+        document.getElementById('refreshHistoryBtn').addEventListener('click', loadHistory);
+        document.getElementById('refreshDiagnosticsBtn').addEventListener('click', loadDiagnostics);
+
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const page = item.dataset.page;
+                navigateTo(page);
+            });
+        });
+
+        // ===================== 启动 =====================
+        window.addEventListener('load', () => {
+            const savedToken = localStorage.getItem('authToken');
+            const savedUser = localStorage.getItem('currentUser');
+
+            if (savedToken && savedUser) {
+                authToken = savedToken;
+                currentUser = JSON.parse(savedUser);
+                showLoginUI(false);
+                initializeApp();
+            } else {
+                showLoginUI(true);
+            }
+        });
+
+        // 选择框样式处理
+        const style = document.createElement('style');
+        style.textContent = `
+            select {
+                width: 100%;
+                padding: 10px 12px;
+                background: var(--gray-700);
+                border: 1px solid var(--gray-600);
+                border-radius: 6px;
+                color: var(--gray-100);
+                font-size: 14px;
+                cursor: pointer;
+            }
+            select:focus {
+                outline: none;
+                border-color: var(--primary);
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>
