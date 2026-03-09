@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PrinterOS — 网络打印机控制台</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0f11;
+    --surface: #16181c;
+    --surface2: #1e2026;
+    --border: #2a2d35;
+    --accent: #e8a020;
+    --accent2: #f0c040;
+    --green: #3ddc84;
+    --red: #ff4757;
+    --blue: #5b8dee;
+    --text: #d4d8e2;
+    --muted: #6b7280;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ─── Login ─── */
+  #login-screen {
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh;
+    background: var(--bg);
+    position: fixed; inset: 0; z-index: 100;
+    transition: opacity .4s;
+  }
+  #login-screen.hidden { opacity: 0; pointer-events: none; }
+  .login-box {
+    width: 360px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 40px 36px;
+  }
+  .login-logo {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .login-title { font-size: 22px; font-weight: 600; margin-bottom: 32px; color: var(--text); }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px; font-family: var(--mono); }
+  .field input, .field select {
+    width: 100%; background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text); padding: 10px 12px;
+    font-family: var(--mono); font-size: 13px;
+    outline: none; transition: border-color .2s;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 16px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text);
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+  .btn.primary:hover { background: var(--accent2); border-color: var(--accent2); }
+  .btn.danger { border-color: var(--red); color: var(--red); }
+  .btn.danger:hover { background: var(--red); color: #fff; }
+  .btn.success { border-color: var(--green); color: var(--green); }
+  .btn.success:hover { background: var(--green); color: #000; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-full { width: 100%; justify-content: center; }
+  .login-hint { margin-top: 20px; font-size: 11px; color: var(--muted); font-family: var(--mono); line-height: 1.8; }
+  .login-hint span { color: var(--accent); }
+  #login-error { color: var(--red); font-size: 12px; margin-top: 8px; font-family: var(--mono); min-height: 18px; }
+
+  /* ─── Layout ─── */
+  #app { display: flex; height: 100vh; overflow: hidden; }
+  nav {
+    width: 220px; flex-shrink: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 0;
+  }
+  .nav-header {
+    padding: 20px 20px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-brand { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: .2em; text-transform: uppercase; }
+  .nav-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .nav-items { flex: 1; padding: 12px 0; overflow-y: auto; }
+  .nav-section { padding: 12px 20px 4px; font-size: 10px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted); font-family: var(--mono); }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 20px; cursor: pointer;
+    color: var(--muted); font-size: 13px;
+    transition: all .15s; border-left: 2px solid transparent;
+    user-select: none;
+  }
+  .nav-item:hover { color: var(--text); background: var(--surface2); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(232,160,32,.07); }
+  .nav-item .icon { font-size: 15px; width: 18px; text-align: center; }
+  .nav-footer {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--muted);
+  }
+  .nav-footer .user-name { color: var(--text); font-weight: 500; }
+  .nav-footer .user-role {
+    display: inline-block;
+    font-family: var(--mono); font-size: 10px;
+    padding: 1px 6px; border: 1px solid var(--border);
+    color: var(--accent); margin-top: 2px;
+  }
+  .nav-footer .btn-logout { margin-top: 10px; width: 100%; justify-content: center; }
+
+  /* ─── Main ─── */
+  main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .page-title {
+    font-size: 18px; font-weight: 600; margin-bottom: 4px;
+  }
+  .page-sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .divider { height: 1px; background: var(--border); margin: 24px 0; }
+
+  /* ─── Cards / Grid ─── */
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px;
+  }
+  .card-title { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-family: var(--mono); margin-bottom: 12px; }
+  .stat-value { font-size: 28px; font-weight: 600; font-family: var(--mono); line-height: 1; }
+  .stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .stat-value.good { color: var(--green); }
+  .stat-value.warn { color: var(--accent); }
+  .stat-value.bad { color: var(--red); }
+
+  /* ─── Status Badge ─── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; font-size: 11px;
+    font-family: var(--mono); border: 1px solid currentColor;
+  }
+  .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.idle { color: var(--green); }
+  .badge.printing { color: var(--blue); animation: pulse-border .8s infinite; }
+  .badge.error { color: var(--red); }
+  .badge.offline { color: var(--muted); }
+  @keyframes pulse-border { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+  /* ─── Progress bar ─── */
+  .progress-bar { height: 6px; background: var(--surface2); border: 1px solid var(--border); margin-top: 8px; }
+  .progress-fill { height: 100%; transition: width .5s; }
+  .progress-fill.toner { background: var(--accent); }
+  .progress-fill.paper { background: var(--blue); }
+  .progress-fill.job { background: var(--green); }
+
+  /* ─── Table ─── */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl th {
+    text-align: left; padding: 8px 12px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+  .tbl td { padding: 10px 12px; border-bottom: 1px solid rgba(42,45,53,.6); vertical-align: middle; }
+  .tbl tr:last-child td { border-bottom: none; }
+  .tbl tr:hover td { background: rgba(255,255,255,.02); }
+  .mono { font-family: var(--mono); }
+
+  /* ─── Form group ─── */
+  .form-row { display: flex; gap: 12px; align-items: flex-end; }
+  .form-row .field { flex: 1; margin-bottom: 0; }
+  .inline-form { background: var(--surface); border: 1px solid var(--border); padding: 20px; }
+  .form-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; }
+
+  /* ─── Toast ─── */
+  #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 12px 16px; min-width: 260px;
+    font-size: 13px; font-family: var(--mono);
+    display: flex; align-items: center; gap: 10px;
+    animation: slideIn .2s ease;
+    border-left: 3px solid var(--accent);
+  }
+  .toast.success { border-left-color: var(--green); }
+  .toast.error { border-left-color: var(--red); }
+  @keyframes slideIn { from{transform:translateX(20px);opacity:0} to{transform:none;opacity:1} }
+
+  /* ─── WS indicator ─── */
+  .ws-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); display: inline-block;
+    transition: background .3s;
+  }
+  .ws-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* ─── Misc ─── */
+  .info-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; }
+  .info-key { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .info-val { font-size: 13px; font-family: var(--mono); color: var(--text); }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .section-header h3 { font-size: 14px; font-weight: 600; }
+  .empty { color: var(--muted); font-size: 13px; font-family: var(--mono); padding: 24px 0; text-align: center; }
+  .alert {
+    padding: 12px 16px; border-left: 3px solid;
+    font-size: 13px; margin-bottom: 16px;
+    background: var(--surface);
+  }
+  .alert.warn { border-color: var(--accent); color: var(--accent); }
+  .alert.err { border-color: var(--red); color: var(--red); }
+  .tag {
+    display: inline-block; padding: 2px 8px;
+    font-size: 10px; font-family: var(--mono);
+    border: 1px solid; border-radius: 2px;
+  }
+  .tag.admin { color: var(--accent); border-color: var(--accent); }
+  .tag.user { color: var(--blue); border-color: var(--blue); }
+  .tag.technician { color: var(--green); border-color: var(--green); }
+
+  @media (max-width: 900px) {
+    .grid-4 { grid-template-columns: repeat(2,1fr); }
+    .grid-3 { grid-template-columns: repeat(2,1fr); }
+    nav { width: 60px; }
+    .nav-item span, .nav-section, .nav-header .nav-sub, .nav-footer .user-name { display: none; }
+    main { padding: 20px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">PrinterOS</div>
+    <div class="login-title">控制台登录</div>
+    <div class="field">
+      <label>用户名</label>
+      <input type="text" id="login-user" value="admin" placeholder="username" />
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input type="password" id="login-pass" value="admin123" placeholder="password" />
+    </div>
+    <div id="login-error"></div>
+    <button class="btn primary btn-full" style="margin-top:16px" onclick="doLogin()">登 录</button>
+    <div class="login-hint">
+      默认账号：<span>admin</span> / admin123 &nbsp;·&nbsp; <span>user</span> / user123 &nbsp;·&nbsp; <span>technician</span> / tech123
+    </div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <nav>
+    <div class="nav-header">
+      <div class="nav-brand">PrinterOS</div>
+      <div class="nav-sub">v1.0 Control</div>
+    </div>
+    <div class="nav-items">
+      <div class="nav-section">监控</div>
+      <div class="nav-item active" onclick="navigate('dashboard')" id="nav-dashboard">
+        <span class="icon">◈</span><span>仪表盘</span>
+      </div>
+      <div class="nav-item" onclick="navigate('queue')" id="nav-queue">
+        <span class="icon">☰</span><span>打印队列</span>
+      </div>
+      <div class="nav-item" onclick="navigate('history')" id="nav-history">
+        <span class="icon">◷</span><span>打印历史</span>
+      </div>
+      <div class="nav-section">操作</div>
+      <div class="nav-item" onclick="navigate('submit')" id="nav-submit">
+        <span class="icon">⊕</span><span>提交任务</span>
+      </div>
+      <div class="nav-item" onclick="navigate('supplies')" id="nav-supplies">
+        <span class="icon">◉</span><span>耗材管理</span>
+      </div>
+      <div class="nav-section admin-only" style="display:none">高级</div>
+      <div class="nav-item admin-only" onclick="navigate('errors')" id="nav-errors" style="display:none">
+        <span class="icon">⚠</span><span>错误管理</span>
+      </div>
+      <div class="nav-item admin-only" onclick="navigate('users')" id="nav-users" style="display:none">
+        <span class="icon">◎</span><span>用户管理</span>
+      </div>
+    </div>
+    <div class="nav-footer">
+      <div class="user-name" id="nav-username">—</div>
+      <div class="user-role" id="nav-role">—</div>
+      <button class="btn btn-logout" onclick="doLogout()" style="margin-top:10px;font-size:11px">退出登录</button>
+    </div>
+  </nav>
+
+  <main>
+    <!-- Dashboard -->
+    <div class="page active" id="page-dashboard">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div class="page-title">仪表盘</div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);font-family:var(--mono)">
+          <span class="ws-dot" id="ws-dot"></span>
+          <span id="ws-label">未连接</span>
+        </div>
+      </div>
+      <div class="page-sub">打印机实时状态概览</div>
+
+      <div id="status-alert" style="display:none"></div>
+
+      <!-- Stat cards -->
+      <div class="grid grid-4" style="margin-bottom:16px">
+        <div class="card">
+          <div class="card-title">状态</div>
+          <div id="stat-status"><span class="badge offline">offline</span></div>
+          <div class="stat-label" id="stat-error-text" style="margin-top:8px;color:var(--muted);font-family:var(--mono);font-size:11px">—</div>
+        </div>
+        <div class="card">
+          <div class="card-title">温度</div>
+          <div class="stat-value mono" id="stat-temp">—<span style="font-size:16px">°C</span></div>
+        </div>
+        <div class="card">
+          <div class="card-title">总印页数</div>
+          <div class="stat-value mono" id="stat-pages">—</div>
+        </div>
+        <div class="card">
+          <div class="card-title">队列任务</div>
+          <div class="stat-value mono" id="stat-queue">—</div>
+        </div>
+      </div>
+
+      <!-- Supplies -->
+      <div class="grid grid-2" style="margin-bottom:16px">
+        <div class="card">
+          <div class="card-title">纸张余量</div>
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <div class="stat-value mono" id="stat-paper">—</div>
+            <div style="color:var(--muted);font-size:13px">页</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill paper" id="bar-paper" style="width:0%"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">碳粉余量</div>
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <div class="stat-value mono" id="stat-toner">—</div>
+            <div style="color:var(--muted);font-size:13px">%</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill toner" id="bar-toner" style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <!-- Printer info -->
+      <div class="card">
+        <div class="card-title">设备信息</div>
+        <div class="info-grid" id="printer-info">
+          <div class="info-key">型号</div><div class="info-val" id="info-model">—</div>
+          <div class="info-key">序列号</div><div class="info-val" id="info-serial">—</div>
+          <div class="info-key">固件</div><div class="info-val" id="info-firmware">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Queue -->
+    <div class="page" id="page-queue">
+      <div class="page-title">打印队列</div>
+      <div class="page-sub">当前排队及正在打印的任务</div>
+      <div class="section-header">
+        <h3></h3>
+        <button class="btn" onclick="loadQueue()">↻ 刷新</button>
+      </div>
+      <div class="card" style="padding:0">
+        <table class="tbl" id="queue-table">
+          <thead><tr>
+            <th>任务ID</th><th>文件名</th><th>页数</th><th>已打印</th><th>进度</th><th>状态</th><th>操作</th>
+          </tr></thead>
+          <tbody id="queue-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="page" id="page-history">
+      <div class="page-title">打印历史</div>
+      <div class="page-sub">已完成及历史打印记录</div>
+      <div class="section-header">
+        <h3></h3>
+        <button class="btn" onclick="loadHistory()">↻ 刷新</button>
+      </div>
+      <div class="card" style="padding:0">
+        <table class="tbl">
+          <thead><tr>
+            <th>任务ID</th><th>文件名</th><th>页数</th><th>用户</th><th>优先级</th><th>状态</th><th>提交时间</th>
+          </tr></thead>
+          <tbody id="history-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="page" id="page-submit">
+      <div class="page-title">提交打印任务</div>
+      <div class="page-sub">向打印机提交新任务</div>
+      <div class="inline-form" style="max-width:480px">
+        <div class="field">
+          <label>文件名</label>
+          <input type="text" id="job-filename" placeholder="例如: report_2024.pdf" />
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>页数</label>
+            <input type="number" id="job-pages" min="1" max="9999" value="10" />
+          </div>
+          <div class="field">
+            <label>优先级 (0-100)</label>
+            <input type="number" id="job-priority" min="0" max="100" value="0" />
+          </div>
+        </div>
+        <button class="btn primary" onclick="submitJob()" style="margin-top:8px">⊕ 提交任务</button>
+        <div id="submit-result" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--muted)"></div>
+      </div>
+    </div>
+
+    <!-- Supplies -->
+    <div class="page" id="page-supplies">
+      <div class="page-title">耗材管理</div>
+      <div class="page-sub">补充纸张和碳粉（需要管理员或技术员权限）</div>
+      <div class="grid grid-2" style="max-width:700px">
+        <div class="inline-form">
+          <div class="card-title">补充纸张</div>
+          <div class="field">
+            <label>补充页数</label>
+            <input type="number" id="refill-pages" min="1" max="5000" value="500" />
+          </div>
+          <button class="btn success" onclick="refillPaper()">补充纸张</button>
+        </div>
+        <div class="inline-form">
+          <div class="card-title">补充碳粉</div>
+          <div style="color:var(--muted);font-size:12px;margin-bottom:16px;font-family:var(--mono)">碳粉将重置为 100%</div>
+          <button class="btn success" onclick="refillToner()">补充碳粉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Errors (admin) -->
+    <div class="page" id="page-errors">
+      <div class="page-title">错误管理</div>
+      <div class="page-sub">模拟硬件故障及清除错误（仅管理员）</div>
+      <div class="grid grid-2" style="max-width:700px">
+        <div class="inline-form">
+          <div class="card-title">模拟硬件错误</div>
+          <div class="field">
+            <label>错误类型</label>
+            <select id="error-type">
+              <option value="PAPER_EMPTY">缺纸 (PAPER_EMPTY)</option>
+              <option value="TONER_LOW">碳粉不足 (TONER_LOW)</option>
+              <option value="TONER_EMPTY">缺碳粉 (TONER_EMPTY)</option>
+              <option value="HEAT_UNAVAILABLE">加热器故障 (HEAT_UNAVAILABLE)</option>
+              <option value="MOTOR_FAILURE">电机故障 (MOTOR_FAILURE)</option>
+              <option value="SENSOR_FAILURE">传感器故障 (SENSOR_FAILURE)</option>
+            </select>
+          </div>
+          <button class="btn danger" onclick="simulateError()">⚠ 触发错误</button>
+        </div>
+        <div class="inline-form">
+          <div class="card-title">清除硬件错误</div>
+          <div style="color:var(--muted);font-size:12px;margin-bottom:16px;font-family:var(--mono)">清除当前所有硬件错误状态</div>
+          <button class="btn success" onclick="clearError()">✓ 清除错误</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Users (admin) -->
+    <div class="page" id="page-users">
+      <div class="page-title">用户管理</div>
+      <div class="page-sub">管理系统用户（仅管理员）</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap">
+        <div class="inline-form" style="width:320px">
+          <div class="card-title">添加用户</div>
+          <div class="field"><label>用户名</label><input type="text" id="new-username" /></div>
+          <div class="field"><label>密码</label><input type="password" id="new-password" /></div>
+          <div class="field">
+            <label>角色</label>
+            <select id="new-role">
+              <option value="user">user — 普通用户</option>
+              <option value="technician">technician — 技术员</option>
+              <option value="admin">admin — 管理员</option>
+            </select>
+          </div>
+          <button class="btn primary" onclick="addUser()">添加用户</button>
+        </div>
+        <div style="flex:1;min-width:300px">
+          <div class="section-header">
+            <h3>用户列表</h3>
+            <button class="btn" onclick="loadUsers()">↻ 刷新</button>
+          </div>
+          <div class="card" style="padding:0">
+            <table class="tbl">
+              <thead><tr><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr></thead>
+              <tbody id="users-body"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+// ─── Config ────────────────────────────────────────────────
+const API = 'http://localhost:8080';
+const WS_URL = 'ws://localhost:8080/ws';
+let authToken = '';
+let userRole = '';
+let currentUser = '';
+let ws = null;
+let refreshTimer = null;
+
+// ─── Helpers ───────────────────────────────────────────────
+async function api(method, path, body, skipAuth = false) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authToken && !skipAuth) headers['Authorization'] = 'Bearer ' + authToken;
+  try {
+    const r = await fetch(API + path, {
+      method, headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8000)
+    });
+    const text = await r.text();
+    try { return { ok: r.ok, status: r.status, data: JSON.parse(text) }; }
+    catch { return { ok: r.ok, status: r.status, data: { error: text } }; }
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: e.message || '网络错误' } };
+  }
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ─── Auth ──────────────────────────────────────────────────
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  if (!username || !password) { errEl.textContent = '请填写用户名和密码'; return; }
+
+  const res = await api('POST', '/api/auth/login', { username, password }, true);
+  if (res.ok && res.data.token) {
+    authToken = res.data.token;
+    userRole = res.data.role;
+    currentUser = username;
+    document.getElementById('login-screen').classList.add('hidden');
+    initApp();
+  } else {
+    errEl.textContent = res.data.error || '登录失败';
+  }
+}
+
+async function doLogout() {
+  await api('POST', '/api/auth/logout');
+  authToken = ''; userRole = ''; currentUser = '';
+  if (ws) { ws.close(); ws = null; }
+  clearInterval(refreshTimer);
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('login-pass').value = '';
+  document.getElementById('login-error').textContent = '';
+  toast('已退出登录', 'info');
+}
+
+// ─── Init ──────────────────────────────────────────────────
+function initApp() {
+  document.getElementById('nav-username').textContent = currentUser;
+  document.getElementById('nav-role').textContent = userRole;
+
+  // Show admin items
+  const adminEls = document.querySelectorAll('.admin-only');
+  adminEls.forEach(el => el.style.display = (userRole === 'admin') ? '' : 'none');
+
+  navigate('dashboard');
+  connectWS();
+  refreshTimer = setInterval(refreshDashboard, 3000);
+  refreshDashboard();
+
+  // Enter key for login
+  document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+}
+
+// ─── Navigation ────────────────────────────────────────────
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.getElementById('nav-' + page)?.classList.add('active');
+
+  // Lazy load
+  if (page === 'queue') loadQueue();
+  if (page === 'history') loadHistory();
+  if (page === 'users' && userRole === 'admin') loadUsers();
+}
+
+// ─── WebSocket ─────────────────────────────────────────────
+function connectWS() {
+  try {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      document.getElementById('ws-dot').classList.add('connected');
+      document.getElementById('ws-label').textContent = '实时连接';
+    };
+    ws.onclose = () => {
+      document.getElementById('ws-dot').classList.remove('connected');
+      document.getElementById('ws-label').textContent = '未连接';
+      setTimeout(connectWS, 5000);
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        handleWSEvent(msg);
+      } catch {}
+    };
+  } catch {}
+}
+
+function handleWSEvent(msg) {
+  const labels = {
+    job_submitted: '新任务已提交',
+    job_cancelled: '任务已取消',
+    job_paused: '任务已暂停',
+    job_resumed: '任务已恢复',
+    paper_refilled: '纸张已补充',
+    toner_refilled: '碳粉已补充',
+    error_cleared: '错误已清除',
+    error_simulated: '错误已触发',
+  };
+  const t = labels[msg.event];
+  if (t) toast('📡 ' + t, msg.event.includes('error') ? 'error' : 'success');
+  refreshDashboard();
+  if (document.getElementById('page-queue').classList.contains('active')) loadQueue();
+}
+
+// ─── Dashboard ─────────────────────────────────────────────
+async function refreshDashboard() {
+  const res = await api('GET', '/api/status');
+  if (!res.ok) {
+    if (res.status === 0) showAlert('无法连接到后端服务 (localhost:8080)，请确保后端已启动', 'err');
+    return;
+  }
+  hideAlert();
+  const d = res.data;
+
+  // Status badge
+  const statusMap = { idle:'idle', printing:'printing', error:'error', offline:'offline' };
+  const s = statusMap[d.status] || 'offline';
+  const sLabel = { idle:'空闲', printing:'打印中', error:'错误', offline:'离线' }[s] || s;
+  document.getElementById('stat-status').innerHTML = `<span class="badge ${s}">${sLabel}</span>`;
+
+  const err = d.error && d.error !== 'OK' ? d.error : '';
+  document.getElementById('stat-error-text').textContent = err || '—';
+
+  // Numbers
+  const temp = d.temperature ?? '—';
+  const tempEl = document.getElementById('stat-temp');
+  tempEl.innerHTML = temp + '<span style="font-size:16px">°C</span>';
+  tempEl.className = 'stat-value mono' + (temp > 100 ? ' warn' : '');
+
+  document.getElementById('stat-pages').textContent = d.page_count ?? '—';
+
+  // Paper
+  const paper = d.paper_pages ?? 0;
+  document.getElementById('stat-paper').textContent = paper;
+  document.getElementById('bar-paper').style.width = Math.min(100, paper/5000*100) + '%';
+
+  // Toner
+  const toner = d.toner_percentage ?? 0;
+  const tonerEl = document.getElementById('stat-toner');
+  tonerEl.textContent = toner;
+  tonerEl.className = 'stat-value mono' + (toner < 10 ? ' bad' : toner < 30 ? ' warn' : ' good');
+  document.getElementById('bar-toner').style.width = toner + '%';
+
+  // Device info
+  document.getElementById('info-model').textContent = d.model || '—';
+  document.getElementById('info-serial').textContent = d.serial_number || '—';
+  document.getElementById('info-firmware').textContent = d.firmware_version || '—';
+
+  // Queue size from stats
+  const sr = await api('GET', '/api/stats');
+  if (sr.ok) document.getElementById('stat-queue').textContent = sr.data.queue_size ?? '—';
+
+  // Warnings
+  if (toner < 10) toast('⚠ 碳粉严重不足！', 'error');
+  if (paper < 50) toast('⚠ 纸张即将耗尽！', 'error');
+}
+
+function showAlert(msg, type) {
+  const el = document.getElementById('status-alert');
+  el.style.display = '';
+  el.className = 'alert ' + type;
+  el.textContent = msg;
+}
+function hideAlert() { document.getElementById('status-alert').style.display = 'none'; }
+
+// ─── Queue ─────────────────────────────────────────────────
+async function loadQueue() {
+  const tbody = document.getElementById('queue-body');
+  // Get from backend queue
+  const br = await api('GET', '/api/queue');
+  // Get from driver queue (more detailed)
+  const dr = await api('GET', '/api/status');
+
+  let rows = [];
+
+  if (br.ok && br.data.queue) {
+    rows = br.data.queue;
+  }
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(j => {
+    const pct = j.pages > 0 ? Math.round((j.printed_pages||0)/j.pages*100) : 0;
+    const statusCls = { printing:'blue', queued:'muted', paused:'warn', submitted:'muted' };
+    const cls = statusCls[j.status] || 'muted';
+    const canPause = j.status === 'printing' || j.status === 'queued';
+    const canResume = j.status === 'paused';
+    return `<tr>
+      <td class="mono">#${j.task_id}</td>
+      <td>${j.filename || '—'}</td>
+      <td class="mono">${j.pages}</td>
+      <td class="mono">${j.printed_pages || 0}</td>
+      <td style="width:120px">
+        <div class="progress-bar" style="margin:0"><div class="progress-fill job" style="width:${pct}%"></div></div>
+        <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:3px">${pct}%</div>
+      </td>
+      <td><span style="color:var(--${cls});font-family:var(--mono);font-size:11px">${j.status}</span></td>
+      <td>
+        <div style="display:flex;gap:6px">
+          ${canPause ? `<button class="btn" style="padding:4px 8px;font-size:11px" onclick="pauseJob(${j.task_id})">暂停</button>` : ''}
+          ${canResume ? `<button class="btn success" style="padding:4px 8px;font-size:11px" onclick="resumeJob(${j.task_id})">恢复</button>` : ''}
+          <button class="btn danger" style="padding:4px 8px;font-size:11px" onclick="cancelJob(${j.task_id})">取消</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function cancelJob(id) {
+  if (!confirm('确定要取消任务 #' + id + '？')) return;
+  const res = await api('POST', '/api/job/cancel', { task_id: id });
+  if (res.ok) { toast('任务 #' + id + ' 已取消', 'success'); loadQueue(); }
+  else toast('取消失败: ' + (res.data.error || ''), 'error');
+}
+
+async function pauseJob(id) {
+  const res = await api('POST', '/api/job/pause', { task_id: id });
+  if (res.ok) { toast('任务 #' + id + ' 已暂停', 'success'); loadQueue(); }
+  else toast('暂停失败: ' + (res.data.error || ''), 'error');
+}
+
+async function resumeJob(id) {
+  const res = await api('POST', '/api/job/resume', { task_id: id });
+  if (res.ok) { toast('任务 #' + id + ' 已恢复', 'success'); loadQueue(); }
+  else toast('恢复失败: ' + (res.data.error || ''), 'error');
+}
+
+// ─── History ───────────────────────────────────────────────
+async function loadHistory() {
+  const tbody = document.getElementById('history-body');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中…</td></tr>';
+  const res = await api('GET', '/api/history');
+  if (!res.ok) { tbody.innerHTML = `<tr><td colspan="7" class="empty">加载失败</td></tr>`; return; }
+  const hist = res.data.history || [];
+  if (hist.length === 0) { tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无历史记录</td></tr>'; return; }
+  const statusColor = { submitted:'var(--muted)', printing:'var(--blue)', completed:'var(--green)', cancelled:'var(--red)', paused:'var(--accent)' };
+  tbody.innerHTML = hist.map(h => {
+    const t = new Date(h.created_at).toLocaleString('zh-CN');
+    const c = statusColor[h.status] || 'var(--muted)';
+    return `<tr>
+      <td class="mono">#${h.task_id}</td>
+      <td>${h.filename}</td>
+      <td class="mono">${h.pages}</td>
+      <td class="mono">${h.user_id}</td>
+      <td class="mono">${h.priority}</td>
+      <td style="color:${c};font-family:var(--mono);font-size:11px">${h.status}</td>
+      <td style="font-size:11px;color:var(--muted)">${t}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Submit Job ────────────────────────────────────────────
+async function submitJob() {
+  const filename = document.getElementById('job-filename').value.trim();
+  const pages = parseInt(document.getElementById('job-pages').value);
+  const priority = parseInt(document.getElementById('job-priority').value) || 0;
+  const result = document.getElementById('submit-result');
+
+  if (!filename) { result.style.color='var(--red)'; result.textContent='请填写文件名'; return; }
+  if (!pages || pages < 1) { result.style.color='var(--red)'; result.textContent='页数必须大于0'; return; }
+
+  const res = await api('POST', '/api/job/submit', { filename, pages, priority });
+  if (res.ok && res.data.success) {
+    result.style.color = 'var(--green)';
+    result.textContent = `✓ 任务已提交，ID: #${res.data.task_id}`;
+    toast('任务已提交 #' + res.data.task_id, 'success');
+    document.getElementById('job-filename').value = '';
+  } else {
+    result.style.color = 'var(--red)';
+    result.textContent = '✗ ' + (res.data.error || '提交失败');
+    toast('提交失败: ' + (res.data.error || ''), 'error');
+  }
+}
+
+// ─── Supplies ──────────────────────────────────────────────
+async function refillPaper() {
+  const pages = parseInt(document.getElementById('refill-pages').value) || 500;
+  const res = await api('POST', '/api/supplies/refill-paper', { pages });
+  if (res.ok) { toast(`已补充 ${pages} 页纸张`, 'success'); refreshDashboard(); }
+  else toast('补充失败: ' + (res.data.error || '权限不足'), 'error');
+}
+
+async function refillToner() {
+  const res = await api('POST', '/api/supplies/refill-toner');
+  if (res.ok) { toast('碳粉已补充至 100%', 'success'); refreshDashboard(); }
+  else toast('补充失败: ' + (res.data.error || '权限不足'), 'error');
+}
+
+// ─── Errors (admin) ────────────────────────────────────────
+async function simulateError() {
+  const error = document.getElementById('error-type').value;
+  const res = await api('POST', '/api/error/simulate', { error });
+  if (res.ok) { toast('已触发错误: ' + error, 'error'); refreshDashboard(); }
+  else toast('操作失败: ' + (res.data.error || ''), 'error');
+}
+
+async function clearError() {
+  const res = await api('POST', '/api/error/clear');
+  if (res.ok) { toast('错误已清除', 'success'); refreshDashboard(); }
+  else toast('操作失败: ' + (res.data.error || ''), 'error');
+}
+
+// ─── Users (admin) ─────────────────────────────────────────
+async function loadUsers() {
+  const tbody = document.getElementById('users-body');
+  const res = await api('GET', '/api/user/list');
+  if (!res.ok) { tbody.innerHTML = '<tr><td colspan="4" class="empty">加载失败</td></tr>'; return; }
+  const users = res.data.users || [];
+  if (users.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无用户</td></tr>'; return; }
+  tbody.innerHTML = users.map(u => `<tr>
+    <td class="mono">${u.username}</td>
+    <td><span class="tag ${u.role}">${u.role}</span></td>
+    <td style="font-size:11px;color:var(--muted)">${new Date(u.created_at).toLocaleString('zh-CN')}</td>
+    <td>${u.username !== currentUser ? `<button class="btn danger" style="padding:4px 8px;font-size:11px" onclick="deleteUser('${u.username}')">删除</button>` : '<span style="color:var(--muted);font-size:11px">(当前用户)</span>'}</td>
+  </tr>`).join('');
+}
+
+async function addUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
+  if (!username || !password) { toast('请填写完整信息', 'error'); return; }
+  const res = await api('POST', '/api/user/add', { username, password, role });
+  if (res.ok) { toast('用户 ' + username + ' 已创建', 'success'); document.getElementById('new-username').value=''; document.getElementById('new-password').value=''; loadUsers(); }
+  else toast('创建失败: ' + (res.data.error || ''), 'error');
+}
+
+async function deleteUser(username) {
+  if (!confirm('确定删除用户 ' + username + '？')) return;
+  const res = await api('POST', '/api/user/delete', { username });
+  if (res.ok) { toast('用户已删除', 'success'); loadUsers(); }
+  else toast('删除失败: ' + (res.data.error || ''), 'error');
+}
+
+// ─── Keyboard shortcuts ────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('login-screen').style.opacity !== '0' && !document.getElementById('login-screen').classList.contains('hidden')) {
+    doLogin();
+  }
+});
+document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+document.getElementById('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-pass').focus(); });
+</script>
+</body>
+</html>
