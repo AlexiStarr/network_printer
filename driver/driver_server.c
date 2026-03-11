@@ -1,10 +1,14 @@
 /**
  * driver_server.c
  * 打印机驱动服务器实现
+ * 已集成二进制协议、状态机和协议处理器
  */
 
 #include "driver_server.h"
 #include "platform.h"
+#include "protocol.h"
+#include "state_machine.h"
+#include "protocol_handler.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -19,216 +23,18 @@ static int running = 0;
 static Printer* global_printer = NULL;
 static thread_t server_thread;
 static thread_t process_thread;
+static struct DriverState* driver_state = NULL;
 
-/* JSON 解析辅助函数 */
-static char* json_get_string(const char* json, const char* key) {
-    char search_str[256];
-    snprintf(search_str, sizeof(search_str), "\"%s\":\"", key);
-    
-    const char* start = strstr(json, search_str);
-    if (start == NULL) return NULL;
-    
-    start += strlen(search_str);
-    const char* end = strchr(start, '"');
-    if (end == NULL) return NULL;
-    
-    char* result = (char*)malloc(end - start + 1);
-    strncpy(result, start, end - start);
-    result[end - start] = '\0';
-    
-    return result;
-}
-
-static int json_get_int(const char* json, const char* key) {
-    char search_str[256];
-    snprintf(search_str, sizeof(search_str), "\"%s\":", key);
-    
-    const char* start = strstr(json, search_str);
-    if (start == NULL) return -1;
-    
-    start += strlen(search_str);
-    return atoi(start);
-}
-
-/* 解析客户端请求 */
-Request* parse_request(const char* json) {
-    if (json == NULL) return NULL;
-    
-    Request* req = (Request*)malloc(sizeof(Request));
-    if (req == NULL) return NULL;
-    
-    /* 确定命令类型 */
-    if (strstr(json, "\"cmd\":\"get_status\"")) {
-        req->cmd = CMD_GET_STATUS;
-    } else if (strstr(json, "\"cmd\":\"get_queue\"")) {
-        req->cmd = CMD_GET_QUEUE;
-    } else if (strstr(json, "\"cmd\":\"submit_job\"")) {
-        req->cmd = CMD_SUBMIT_JOB;
-    } else if (strstr(json, "\"cmd\":\"cancel_job\"")) {
-        req->cmd = CMD_CANCEL_JOB;
-    } else if (strstr(json, "\"cmd\":\"pause_job\"")) {
-        req->cmd = CMD_PAUSE_JOB;
-    } else if (strstr(json, "\"cmd\":\"resume_job\"")) {
-        req->cmd = CMD_RESUME_JOB;
-    } else if (strstr(json, "\"cmd\":\"refill_paper\"")) {
-        req->cmd = CMD_REFILL_PAPER;
-    } else if (strstr(json, "\"cmd\":\"refill_toner\"")) {
-        req->cmd = CMD_REFILL_TONER;
-    } else if (strstr(json, "\"cmd\":\"clear_error\"")) {
-        req->cmd = CMD_CLEAR_ERROR;
-    } else if (strstr(json, "\"cmd\":\"simulate_error\"")) {
-        req->cmd = CMD_SIMULATE_ERROR;
-    } else {
-        req->cmd = CMD_UNKNOWN;
-    }
-    
-    /* 复制参数 */
-    req->params = (char*)malloc(strlen(json) + 1);
-    strcpy(req->params, json);
-    
-    return req;
-}
-
-/* 释放请求 */
-void free_request(Request* req) {
-    if (req != NULL) {
-        if (req->params != NULL) {
-            free(req->params);
-        }
-        free(req);
-    }
-}
+/* ============================================
+ * 二进制协议处理已由 protocol_handler.c 实现
+ * 本文件不再包含 JSON 解析代码
+ * ============================================
+ */
 
 /* 处理请求 */
 Response* handle_request(Printer* printer, Request* req) {
-    if (printer == NULL || req == NULL) return NULL;
-    
-    Response* resp = (Response*)malloc(sizeof(Response));
-    if (resp == NULL) return NULL;
-    
-    // Bug #4 修复: 使用动态分配替代固定缓冲区大小
-    // 预分配8KB，如不足会自动扩展
-    size_t buffer_size = 8192;
-    resp->data = (char*)malloc(buffer_size);
-    if (resp->data == NULL) {
-        free(resp);
-        return NULL;
-    }
-    
-    switch (req->cmd) {
-        case CMD_GET_STATUS: {
-            printer_get_status(printer, resp->data, buffer_size);
-            resp->success = 1;
-            break;
-        }
-        case CMD_GET_QUEUE: {
-            printer_get_queue(printer, resp->data, buffer_size);
-            resp->success = 1;
-            break;
-        }
-        case CMD_SUBMIT_JOB: {
-            char* filename = json_get_string(req->params, "filename");
-            int pages = json_get_int(req->params, "pages");
-            
-            if (filename != NULL && pages > 0) {
-                int task_id = printer_submit_job(printer, filename, pages);
-                if (task_id > 0) {
-                    snprintf(resp->data, buffer_size, "{\"success\":true,\"task_id\":%d}", task_id);
-                    resp->success = 1;
-                } else {
-                    strcpy(resp->data, "{\"success\":false,\"error\":\"Failed to submit job\"}");
-                    resp->success = 0;
-                }
-                free(filename);  // Bug #4: 释放字符串内存
-            } else {
-                strcpy(resp->data, "{\"success\":false,\"error\":\"Invalid parameters\"}");
-                resp->success = 0;
-                if (filename != NULL) free(filename);  // Bug #4: 确保释放
-            }
-            break;
-        }
-        case CMD_CANCEL_JOB: {
-            int task_id = json_get_int(req->params, "task_id");
-            int result = printer_cancel_job(printer, task_id);
-            if (result == 0) {
-                snprintf(resp->data, buffer_size, "{\"success\":true}");
-                resp->success = 1;
-            } else {
-                strcpy(resp->data, "{\"success\":false,\"error\":\"Failed to cancel job\"}");
-                resp->success = 0;
-            }
-            break;
-        }
-        case CMD_PAUSE_JOB: {
-            int task_id = json_get_int(req->params, "task_id");
-            int result = printer_pause_job(printer, task_id);
-            if (result == 0) {
-                snprintf(resp->data, buffer_size, "{\"success\":true}");
-                resp->success = 1;
-            } else {
-                strcpy(resp->data, "{\"success\":false,\"error\":\"Failed to pause job\"}");
-                resp->success = 0;
-            }
-            break;
-        }
-        case CMD_RESUME_JOB: {
-            int task_id = json_get_int(req->params, "task_id");
-            int result = printer_resume_job(printer, task_id);
-            if (result == 0) {
-                snprintf(resp->data, buffer_size, "{\"success\":true}");
-                resp->success = 1;
-            } else {
-                strcpy(resp->data, "{\"success\":false,\"error\":\"Failed to resume job\"}");
-                resp->success = 0;
-            }
-            break;
-        }
-        case CMD_REFILL_PAPER: {
-            int pages = json_get_int(req->params, "pages");
-            printer_refill_paper(printer, pages);
-            snprintf(resp->data, buffer_size, "{\"success\":true,\"paper_pages\":%d}", printer->paper_pages);
-            resp->success = 1;
-            break;
-        }
-        case CMD_REFILL_TONER: {
-            printer_refill_toner(printer);
-            snprintf(resp->data, buffer_size, "{\"success\":true,\"toner_percentage\":%d}", printer->toner_percentage);
-            resp->success = 1;
-            break;
-        }
-        case CMD_CLEAR_ERROR: {
-            printer_clear_error(printer);
-            strcpy(resp->data, "{\"success\":true}");
-            resp->success = 1;
-            break;
-        }
-        case CMD_SIMULATE_ERROR: {
-            char* error_str = json_get_string(req->params, "error");
-            if (error_str != NULL) {
-                HardwareError error = HARDWARE_OK;
-                if (strcmp(error_str, "PAPER_EMPTY") == 0) error = ERROR_PAPER_EMPTY;
-                else if (strcmp(error_str, "TONER_LOW") == 0) error = ERROR_TONER_LOW;
-                else if (strcmp(error_str, "TONER_EMPTY") == 0) error = ERROR_TONER_EMPTY;
-                else if (strcmp(error_str, "HEAT_UNAVAILABLE") == 0) error = ERROR_HEAT_UNAVAILABLE;
-                else if (strcmp(error_str, "MOTOR_FAILURE") == 0) error = ERROR_MOTOR_FAILURE;
-                else if (strcmp(error_str, "SENSOR_FAILURE") == 0) error = ERROR_SENSOR_FAILURE;
-                
-                printer_simulate_error(printer, error);
-                strcpy(resp->data, "{\"success\":true}");
-                resp->success = 1;
-                free(error_str);
-            } else {
-                strcpy(resp->data, "{\"success\":false,\"error\":\"Invalid error type\"}");
-                resp->success = 0;
-            }
-            break;
-        }
-        default:
-            strcpy(resp->data, "{\"success\":false,\"error\":\"Unknown command\"}");
-            resp->success = 0;
-    }
-    
-    return resp;
+    // 此函数已被 protocol_handle_request 替代，保留以兼容旧代码
+    return NULL;
 }
 
 /* 释放响应 */
@@ -246,29 +52,81 @@ static unsigned int __stdcall handle_client(void* arg) {
     SOCKET client_sock = *(SOCKET*)arg;
     free(arg);
     
-    char buffer[BUFFER_SIZE];
+    unsigned char buffer[BUFFER_SIZE];
+    unsigned char response_buf[BUFFER_SIZE];
+    int accumulated_bytes = 0;
+    
+    printf("[Driver] 客户端已连接，准备接收二进制协议数据\n");
     
     while (running) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int bytes = recv(client_sock, buffer, BUFFER_SIZE - 1, 0);
+        memset(buffer + accumulated_bytes, 0, BUFFER_SIZE - accumulated_bytes);
+        int bytes = recv(client_sock, (char*)(buffer + accumulated_bytes), BUFFER_SIZE - accumulated_bytes - 1, 0);
         
         if (bytes <= 0) {
             break; /* 客户端断开连接 */
         }
         
-        /* 解析并处理请求 */
-        Request* req = parse_request(buffer);
-        if (req != NULL) {
-            Response* resp = handle_request(global_printer, req);
-            if (resp != NULL) {
-                send(client_sock, resp->data, (int)strlen(resp->data), 0);
-                free_response(resp);
+        accumulated_bytes += bytes;
+        
+        /* 检查是否有完整的数据包
+         * 格式: [12字节头] + [可变长度数据] + [4字节校验和]
+         */
+        while (accumulated_bytes >= 16) {  // 至少要有头(12) + 校验和(4)
+            ProtocolHeader* header = (ProtocolHeader*)buffer;
+            
+            // 验证魔法数字
+            if (header->magic != PROTOCOL_MAGIC) {
+                printf("[Driver] 错误: 无效的魔法数字 0x%X\n", header->magic);
+                accumulated_bytes = 0;
+                break;
             }
-            free_request(req);
+            
+            // 验证版本
+            if (header->version != PROTOCOL_VERSION) {
+                printf("[Driver] 错误: 不支持的协议版本 %d\n", header->version);
+                accumulated_bytes = 0;
+                break;
+            }
+            
+            // 计算完整数据包大小
+            uint16_t data_len = header->length;  /* 直接使用 length 成员 */
+            int total_packet_size = 12 + data_len + 4;
+            
+            if (accumulated_bytes < total_packet_size) {
+                // 数据包不完整，继续等待
+                break;
+            }
+            
+            // 验证校验和
+            uint32_t received_checksum = 0;
+            memcpy(&received_checksum, buffer + 12 + data_len, 4);
+            
+            uint32_t calculated_checksum = calculate_checksum(buffer, 12 + data_len);
+            if (received_checksum != calculated_checksum) {
+                printf("[Driver] 错误: 校验和验证失败\n");
+            }
+            
+            printf("[Driver] 收到完整的二进制协议数据包, 命令: %d, 长度: %d\n", header->cmd, data_len);
+            
+            // 处理请求并生成响应
+            int response_len = protocol_handle_request(global_printer, buffer, 12 + data_len, response_buf, sizeof(response_buf));
+            
+            if (response_len > 0) {
+                // 发送响应
+                send(client_sock, (const char*)response_buf, response_len, 0);
+                printf("[Driver] 已发送二进制协议响应, 长度: %d\n", response_len);
+            }
+            
+            // 清理已处理的数据包
+            accumulated_bytes -= total_packet_size;
+            if (accumulated_bytes > 0) {
+                memmove(buffer, buffer + total_packet_size, accumulated_bytes);
+            }
         }
     }
     
     closesocket(client_sock);
+    printf("[Driver] 客户端连接已关闭\n");
     thread_exit(0);
     return 0;
 }

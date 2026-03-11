@@ -21,12 +21,14 @@ Printer* printer_init() {
 
     /* 初始化耗材 */
     printer->paper_pages = 500;
+    printer->paper_max = 500;     /* 纸张最大容量 */
     printer->toner_percentage = 100;
 
     /* 初始化硬件状态 */
     printer->status = PRINTER_IDLE;
     printer->error = HARDWARE_OK;
     printer->temperature = 25;
+    printer->temperature_max = 100;
     printer->page_count = 0;
 
     /* 初始化打印队列 */
@@ -37,6 +39,9 @@ Printer* printer_init() {
     /* 初始化当前任务 */
     printer->current_task = NULL;
     printer->print_speed = 20; /* 20 页/分钟 */
+    
+    /* 初始化温度管理 */
+    printer->active_cycles = 0;
 
     return printer;
 }
@@ -180,7 +185,7 @@ void printer_process_cycle(Printer* printer) {
             task->start_time = time(NULL);
             task->status = PRINTER_PRINTING;
             printer->status = PRINTER_PRINTING;
-            printer->temperature = 180; /* 加热 */
+            printer->temperature = 80; /* 加热到80℃ */
         }
 
         /* 模拟打印（每个周期打印一页） */
@@ -201,7 +206,7 @@ void printer_process_cycle(Printer* printer) {
                 task->status = PRINTER_IDLE;
                 printer->current_task = NULL;
                 printer->status = PRINTER_IDLE;
-                printer->temperature = 25; /* 冷却 */
+                printer->temperature = 25; /* 冷却回常温 */
             }
         }
     } else {
@@ -216,6 +221,36 @@ void printer_process_cycle(Printer* printer) {
                 printer->queue_size--;
                 break;
             }
+        }
+    }
+    
+    /* 管理温度: 根据活跃任务数和空闲时间动态调整 */
+    int active_tasks = printer_get_active_task_count(printer);
+    
+    if (printer->current_task == NULL) {
+        /* 没有在打印：温度逐步冷却 */
+        if (printer->temperature > 25) {
+            printer->temperature -= 2;
+            if (printer->temperature < 25) printer->temperature = 25;
+        }
+        printer->active_cycles = 0;
+    } else {
+        /* 正在打印：温度基于队列长度动态变化 */
+        printer->active_cycles++;
+        
+        /* 队列越长，温度越高（加快打印速度） */
+        int queue_pressure = 50 + (active_tasks * 10);  /* 50-100℃ */
+        if (queue_pressure > 85) queue_pressure = 85;
+        
+        if (printer->temperature < queue_pressure) {
+            printer->temperature += 3;
+        } else if (printer->temperature > queue_pressure) {
+            printer->temperature -= 1;
+        }
+        
+        /* 确保不超过最大温度 */
+        if (printer->temperature > printer->temperature_max) {
+            printer->temperature = printer->temperature_max;
         }
     }
 }
@@ -309,7 +344,7 @@ void printer_get_queue(Printer* printer, char* queue_json, int buffer_size) {
     }
 
     for (int i = 0; i < printer->queue_size; i++) {
-        if (pos > strlen("{\"tasks\":[")) {
+        if (pos > (int)strlen("{\"tasks\":[")) {
             pos += snprintf(queue_json + pos, buffer_size - pos, ",");
         }
         PrintTask* task = &printer->queue[i];
@@ -325,9 +360,25 @@ void printer_get_queue(Printer* printer, char* queue_json, int buffer_size) {
 /* 补充纸张 */
 void printer_refill_paper(Printer* printer, int pages) {
     if (printer != NULL) {
+        /* 检查是否超过最大值 */
+        int new_pages = printer->paper_pages + pages;
+        if (new_pages > printer->paper_max) {
+            printf("[PRINTER] 警告：纸仓已满，请稍后再加吧~ (当前:%d, 最大:%d)\n", 
+                   printer->paper_pages, printer->paper_max);
+            printer->paper_pages = printer->paper_max;  /* 限制到最大值 */
+            return;
+        }
+        
         printer->paper_pages += pages;
-        if (printer->paper_pages > 5000) {
-            printer->paper_pages = 5000; /* 最多 5000 页 */
+        printf("[PRINTER] 补充纸张 %d 页，当前库存：%d/%d\n", 
+               pages, printer->paper_pages, printer->paper_max);
+        
+        /* 如果之前因为缺纸报错，现在清除 */
+        if (printer->error == ERROR_PAPER_EMPTY) {
+            printer->error = HARDWARE_OK;
+            if (printer->status == PRINTER_ERROR) {
+                printer->status = PRINTER_IDLE;
+            }
         }
     }
 }
@@ -358,5 +409,86 @@ void printer_simulate_error(Printer* printer, HardwareError error) {
     if (printer != NULL) {
         printer->error = error;
         printer->status = PRINTER_ERROR;
+        
+        /* 【改进】根据错误类型改变硬件状态，而不只是记录错误 */
+        switch (error) {
+            case ERROR_PAPER_EMPTY:
+                /* 缺纸：纸张清零 */
+                printer->paper_pages = 0;
+                printf("[PRINTER] 模拟缺纸错误 - 纸张已清零\n");
+                break;
+                
+            case ERROR_TONER_EMPTY:
+                /* 缺碳粉：碳粉清零 */
+                printer->toner_percentage = 0;
+                printf("[PRINTER] 模拟缺碳粉错误 - 碳粉已清零\n");
+                break;
+                
+            case ERROR_TONER_LOW:
+                /* 碳粉不足：设置为5% */
+                printer->toner_percentage = 5;
+                printf("[PRINTER] 模拟碳粉不足错误 - 碳粉设置为5%%\n");
+                break;
+                
+            case ERROR_HEAT_UNAVAILABLE:
+                /* 加热器故障：温度设置为常温 */
+                printer->temperature = 25;
+                printf("[PRINTER] 模拟加热器故障 - 温度已重置\n");
+                break;
+                
+            case ERROR_MOTOR_FAILURE:
+                /* 电机故障：暂停当前任务 */
+                if (printer->current_task != NULL) {
+                    printer->current_task->status = PRINTER_PAUSED;
+                }
+                printf("[PRINTER] 模拟电机故障 - 已暂停当前任务\n");
+                break;
+                
+            case ERROR_SENSOR_FAILURE:
+                /* 传感器故障：设置为离线状态 */
+                printer->status = PRINTER_OFFLINE;
+                printf("[PRINTER] 模拟传感器故障 - 打印机离线\n");
+                break;
+                
+            default:
+                printf("[PRINTER] 模拟了未知硬件错误\n");
+        }
     }
+}
+
+/* 设置纸张最大容量 */
+void printer_set_paper_max(Printer* printer, int max_pages) {
+    if (printer != NULL) {
+        if (max_pages <= 0) {
+            printf("[PRINTER] 错误：纸张最大值必须 > 0\n");
+            return;
+        }
+        
+        printer->paper_max = max_pages;
+        
+        /* 如果当前纸张超过最大值，进行调整 */
+        if (printer->paper_pages > max_pages) {
+            printf("[PRINTER] 警告：纸张已清零 - 纸仓已满，请稍后再加吧~\n");
+            printer->paper_pages = max_pages;  /* 限制到最大值 */
+            printer->error = ERROR_PAPER_EMPTY;
+            printer->status = PRINTER_ERROR;
+        }
+    }
+}
+
+/* 获取打印队列中的活跃任务数 */
+int printer_get_active_task_count(const Printer* printer) {
+    if (printer == NULL) return 0;
+    
+    int count = 0;
+    
+    /* 计算当前正在打印的任务 */
+    if (printer->current_task != NULL) {
+        count++;
+    }
+    
+    /* 计算队列中的任务 */
+    count += printer->queue_size;
+    
+    return count;
 }

@@ -372,6 +372,16 @@
           <div class="info-key">固件</div><div class="info-val" id="info-firmware">—</div>
         </div>
       </div>
+
+      <!-- Real-time Progress -->
+      <div class="card">
+        <div class="card-title">🔴 实时打印进度</div>
+        <div id="active-jobs-list" style="display:grid;gap:8px;margin-top:8px">
+          <div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">
+            暂无活动打印任务。WebSocket正在连接...
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Queue -->
@@ -892,6 +902,40 @@ async function deleteUser(username) {
   else toast('删除失败: ' + (res.data.error || ''), 'error');
 }
 
+// ─── Real-time Progress Integration ────────────────────────
+let progressTracker = null;
+
+async function initializeProgressTracker() {
+  try {
+    progressTracker = new PrintProgressTracker();
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const wsUrl = wsProtocol + window.location.host + '/ws/progress';
+    
+    await progressTracker.connect(wsUrl);
+    console.log('[Main] Progress tracker connected');
+    
+    // 更新连接状态
+    if (document.getElementById('ws-dot')) {
+      document.getElementById('ws-dot').style.background = 'var(--green)';
+      document.getElementById('ws-label').textContent = '已连接';
+    }
+  } catch (error) {
+    console.log('[Main] Progress tracker connection failed (WebSocket route may not be fully integrated yet):', error);
+    // 这是预期的，因为WebSocket路由可能还未完全配置
+  }
+}
+
+// 页面加载后初始化进度追踪
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(initializeProgressTracker, 500);
+});
+
+</script>
+
+<!-- 加载实时进度显示模块 -->
+<script src="progress-display.js"></script>
+
+<script>
 // ─── Keyboard shortcuts ────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && document.getElementById('login-screen').style.opacity !== '0' && !document.getElementById('login-screen').classList.contains('hidden')) {

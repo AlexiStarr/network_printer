@@ -8,26 +8,7 @@
 #define PRINTER_SIMULATOR_H
 
 #include <time.h>
-
-/* 打印机状态枚举 */
-typedef enum {
-    PRINTER_IDLE,           /* 空闲状态 */
-    PRINTER_PRINTING,       /* 正在打印 */
-    PRINTER_ERROR,          /* 错误状态 */
-    PRINTER_PAUSED,         /* 暂停状态 */
-    PRINTER_OFFLINE         /* 离线状态 */
-} PrinterStatus;
-
-/* 硬件故障类型 */
-typedef enum {
-    HARDWARE_OK,            /* 正常 */
-    ERROR_PAPER_EMPTY,      /* 缺纸 */
-    ERROR_TONER_LOW,        /* 碳粉不足 */
-    ERROR_TONER_EMPTY,      /* 缺少碳粉 */
-    ERROR_HEAT_UNAVAILABLE, /* 加热器故障 */
-    ERROR_MOTOR_FAILURE,    /* 电机故障 */
-    ERROR_SENSOR_FAILURE    /* 传感器故障 */
-} HardwareError;
+#include "protocol.h"  /* PrinterStatus 和 HardwareError 定义已移至 protocol.h */
 
 /* 打印任务结构 */
 typedef struct {
@@ -49,12 +30,14 @@ typedef struct {
 
     /* 耗材状态 */
     int paper_pages;        /* 纸张剩余页数 */
+    int paper_max;          /* 纸张最大容量（默认500页） */
     int toner_percentage;   /* 碳粉百分比 */
 
     /* 硬件状态 */
     PrinterStatus status;   /* 打印机状态 */
     HardwareError error;    /* 硬件错误 */
-    int temperature;        /* 打印头温度（摄氏度） */
+    int temperature;        /* 打印头温度（摄氏度）0-100 */
+    int temperature_max;    /* 最大温度限制（默认100℃） */
     int page_count;         /* 总打印页数 */
 
     /* 打印队列 */
@@ -65,6 +48,9 @@ typedef struct {
     /* 当前打印任务 */
     PrintTask* current_task; /* 当前任务指针 */
     int print_speed;        /* 打印速度（页/分钟） */
+    
+    /* 温度管理 */
+    int active_cycles;      /* 活跃周期计数，用于温度计算 */
 
 } Printer;
 
@@ -136,5 +122,15 @@ void printer_clear_error(Printer* printer);
  * 模拟硬件故障
  */
 void printer_simulate_error(Printer* printer, HardwareError error);
+
+/**
+ * 设置纸张最大容量
+ */
+void printer_set_paper_max(Printer* printer, int max_pages);
+
+/**
+ * 获取打印队列中的活跃任务数
+ */
+int printer_get_active_task_count(const Printer* printer);
 
 #endif /* PRINTER_SIMULATOR_H */

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +23,25 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ==================== 数据库相关 ====================
+// ==================== 二进制协议常量 ====================
+
+const (
+	PROTOCOL_MAGIC   = 0xDEADBEEF
+	PROTOCOL_VERSION = 1
+	// 命令值必须与 binary_protocol.go 及 C 驱动完全一致
+	CMD_GET_STATUS     = 0x01
+	CMD_GET_QUEUE      = 0x02
+	CMD_SUBMIT_JOB     = 0x10
+	CMD_CANCEL_JOB     = 0x11
+	CMD_PAUSE_JOB      = 0x12
+	CMD_RESUME_JOB     = 0x13
+	CMD_REFILL_PAPER   = 0x20
+	CMD_REFILL_TONER   = 0x21
+	CMD_CLEAR_ERROR    = 0x22
+	CMD_SIMULATE_ERROR = 0x23
+	CMD_ACK            = 0xFE
+	CMD_ERROR_RESP     = 0xFF
+)
 
 // Database 数据库管理器
 type Database struct {
@@ -523,25 +545,532 @@ func (q *PrintJobQueue) GetQueueSize() int {
 	return len(q.heap)
 }
 
+// ==================== 二进制协议编码/解码 ====================
+
+// calculateBinaryChecksum 计算校验和，算法与 binary_protocol.go / C 驱动完全一致：
+// 每字节先累加再循环左移，最后与 PROTOCOL_MAGIC 异或
+func calculateBinaryChecksum(data []byte) uint32 {
+	var sum uint32
+	for _, b := range data {
+		sum += uint32(b)
+		sum = (sum << 1) | (sum >> 31) // 循环左移 1 位
+	}
+	return sum ^ PROTOCOL_MAGIC
+}
+
+// 编码获取状态命令
+func encodeGetStatusRequest(sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	// 头部 (12 字节)
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC)) // 魔法数字
+	buf.WriteByte(PROTOCOL_VERSION)                                // 版本
+	buf.WriteByte(byte(CMD_GET_STATUS))                            // 命令
+	binary.Write(buf, binary.LittleEndian, uint16(0))              // 数据长度(0)
+	binary.Write(buf, binary.LittleEndian, sequence)               // 序列号
+
+	headerAndData := buf.Bytes()
+
+	// 校验和
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码提交任务命令（payload 布局与 SubmitJobRequest 结构体一致）
+func encodeSubmitJobRequest(filename string, pages int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	// payload: TaskID(4) + Pages(2) + Priority(1) + PaperSize(1) + FilenameLen(2) + filename bytes
+	dataBuf := new(bytes.Buffer)
+	binary.Write(dataBuf, binary.LittleEndian, uint32(0))             // TaskID（由驱动分配，填 0）
+	binary.Write(dataBuf, binary.LittleEndian, uint16(pages))         // Pages
+	dataBuf.WriteByte(0)                                              // Priority（默认 0）
+	dataBuf.WriteByte(0)                                              // PaperSize（默认 0 = A4）
+	binary.Write(dataBuf, binary.LittleEndian, uint16(len(filename))) // FilenameLen
+	dataBuf.WriteString(filename)                                     // filename bytes（不加 null）
+
+	dataBytes := dataBuf.Bytes()
+
+	// 头部 (12 字节)
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_SUBMIT_JOB))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	buf.Write(dataBytes)
+
+	headerAndData := buf.Bytes()
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码取消任务命令
+func encodeCancelJobRequest(taskID int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	// 数据部分
+	dataBuf := new(bytes.Buffer)
+	binary.Write(dataBuf, binary.LittleEndian, uint32(taskID))
+
+	dataBytes := dataBuf.Bytes()
+
+	// 头部
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_CANCEL_JOB))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	// 数据
+	buf.Write(dataBytes)
+
+	headerAndData := buf.Bytes()
+
+	// 校验和
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码暂停任务命令
+func encodePauseJobRequest(taskID int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	dataBuf := new(bytes.Buffer)
+	binary.Write(dataBuf, binary.LittleEndian, uint32(taskID))
+	dataBytes := dataBuf.Bytes()
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_PAUSE_JOB))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	buf.Write(dataBytes)
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码恢复任务命令
+func encodeResumeJobRequest(taskID int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	dataBuf := new(bytes.Buffer)
+	binary.Write(dataBuf, binary.LittleEndian, uint32(taskID))
+	dataBytes := dataBuf.Bytes()
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_RESUME_JOB))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	buf.Write(dataBytes)
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码获取队列命令
+func encodeGetQueueRequest(sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_GET_QUEUE))
+	binary.Write(buf, binary.LittleEndian, uint16(0)) // 数据长度为0
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码补充纸张命令
+func encodeRefillPaperRequest(pages int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	dataBuf := new(bytes.Buffer)
+	binary.Write(dataBuf, binary.LittleEndian, uint32(pages))
+	dataBytes := dataBuf.Bytes()
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_REFILL_PAPER))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	buf.Write(dataBytes)
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码补充碳粉命令
+func encodeRefillTonerRequest(sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_REFILL_TONER))
+	binary.Write(buf, binary.LittleEndian, uint16(0)) // 数据长度为0
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码清除错误命令
+func encodeClearErrorRequest(sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_CLEAR_ERROR))
+	binary.Write(buf, binary.LittleEndian, uint16(0))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// 编码模拟错误命令
+func encodeSimulateErrorRequest(errorType int, sequence uint32) []byte {
+	buf := new(bytes.Buffer)
+
+	dataBuf := new(bytes.Buffer)
+	dataBuf.WriteByte(byte(errorType))
+	dataBytes := dataBuf.Bytes()
+
+	binary.Write(buf, binary.LittleEndian, uint32(PROTOCOL_MAGIC))
+	buf.WriteByte(PROTOCOL_VERSION)
+	buf.WriteByte(byte(CMD_SIMULATE_ERROR))
+	binary.Write(buf, binary.LittleEndian, uint16(len(dataBytes)))
+	binary.Write(buf, binary.LittleEndian, sequence)
+
+	buf.Write(dataBytes)
+	headerAndData := buf.Bytes()
+
+	checksum := calculateBinaryChecksum(headerAndData)
+	binary.Write(buf, binary.LittleEndian, checksum)
+
+	return buf.Bytes()
+}
+
+// parseBinaryResponse 解析 C 驱动返回的二进制响应数据包。
+// 协议头布局（12 字节）：Magic(4) | Version(1) | Command(1) | Length(2) | Sequence(4)
+func parseBinaryResponse(data []byte) (map[string]interface{}, error) {
+	// 检查最小长度：12(头) + 0(数据) + 4(校验和)
+	if len(data) < 16 {
+		return nil, fmt.Errorf("响应过短: %d 字节", len(data))
+	}
+
+	// 解析头部
+	magic := binary.LittleEndian.Uint32(data[0:4])
+	if magic != PROTOCOL_MAGIC {
+		return nil, fmt.Errorf("魔法数字错误: 0x%X", magic)
+	}
+
+	version := data[4]
+	if version != PROTOCOL_VERSION {
+		return nil, fmt.Errorf("协议版本错误: %d", version)
+	}
+
+	cmd := data[5]
+	// Bug #4 修复：Length 字段在偏移 6-7，而非 8-9（8-11 是 Sequence）
+	dataLen := binary.LittleEndian.Uint16(data[6:8])
+
+	// 检查完整性
+	totalLen := 12 + int(dataLen) + 4
+	if len(data) < totalLen {
+		return nil, fmt.Errorf("响应不完整: 期望 %d 字节，实际 %d 字节", totalLen, len(data))
+	}
+
+	// 验证校验和
+	payloadData := data[:12+int(dataLen)]
+	receivedChecksum := binary.LittleEndian.Uint32(data[12+int(dataLen) : 12+int(dataLen)+4])
+	calculatedChecksum := calculateBinaryChecksum(payloadData)
+	if receivedChecksum != calculatedChecksum {
+		return nil, fmt.Errorf("校验和验证失败: recv=0x%X, calc=0x%X", receivedChecksum, calculatedChecksum)
+	}
+
+	responseData := data[12 : 12+int(dataLen)]
+	result := make(map[string]interface{})
+
+	// Bug #7 修复：按命令类型解码二进制载荷，而非尝试 JSON
+	switch cmd {
+	case CMD_ACK:
+		// ACK 无载荷，表示成功
+		result["success"] = true
+		if dataLen >= 4 {
+			result["task_id"] = float64(binary.LittleEndian.Uint32(responseData[0:4]))
+		}
+
+	case CMD_ERROR_RESP:
+		// 错误响应：ErrorCode(1) + DetailLen(2) + detail string
+		result["success"] = false
+		if len(responseData) >= 1 {
+			result["error_code"] = responseData[0]
+		}
+		if len(responseData) >= 3 {
+			detailLen := binary.LittleEndian.Uint16(responseData[1:3])
+			if len(responseData) >= 3+int(detailLen) {
+				result["error"] = string(responseData[3 : 3+detailLen])
+			}
+		}
+
+	case CMD_GET_STATUS:
+		// StatusResponse 布局（与 binary_protocol.go 保持一致）：
+		// Status(1) + Error(1) + PaperPages(2) + TonerPercent(2) +
+		// Temperature(1) + PageCount(4) + QueueSize(2) + CurrentTaskID(1) + Reserved(3)
+		if len(responseData) >= 17 {
+			statusByte := responseData[0]
+			statusStr := "idle"
+			switch statusByte {
+			case 1:
+				statusStr = "printing"
+			case 2:
+				statusStr = "error"
+			case 3:
+				statusStr = "paused"
+			}
+			result["success"] = true
+			result["status"] = statusStr
+			result["error_code"] = responseData[1]
+			result["paper_pages"] = float64(binary.LittleEndian.Uint16(responseData[2:4]))
+			result["toner_percent"] = float64(binary.LittleEndian.Uint16(responseData[4:6]))
+			result["temperature"] = float64(responseData[6])
+			result["page_count"] = float64(binary.LittleEndian.Uint32(responseData[7:11]))
+			result["queue_size"] = float64(binary.LittleEndian.Uint16(responseData[11:13]))
+			result["current_task_id"] = float64(responseData[13])
+		}
+
+	case CMD_GET_QUEUE:
+		// 队列响应：Count(2) + TaskProgress 条目数组
+		result["success"] = true
+		if len(responseData) >= 2 {
+			count := binary.LittleEndian.Uint16(responseData[0:2])
+			result["queue_size"] = float64(count)
+		}
+
+	default:
+		// 未知响应类型，返回成功+原始字节（供调试）
+		result["success"] = true
+		result["raw_data"] = responseData
+	}
+
+	return result, nil
+}
+
+// readFullPacket 从 TCP 连接中完整读取一个二进制协议数据包
+// Bug #6 修复：单次 conn.Read() 不保证读到完整包，需先读头再读剩余字节
+func readFullPacket(conn net.Conn) ([]byte, error) {
+	// 先读 12 字节头部
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, fmt.Errorf("读取协议头失败: %w", err)
+	}
+
+	// 验证 magic
+	magic := binary.LittleEndian.Uint32(header[0:4])
+	if magic != PROTOCOL_MAGIC {
+		return nil, fmt.Errorf("魔法数字错误: 0x%X", magic)
+	}
+
+	// 读取 Length（偏移 6-7）
+	dataLen := binary.LittleEndian.Uint16(header[6:8])
+
+	// 读取 payload + 4 字节校验和
+	rest := make([]byte, int(dataLen)+4)
+	if _, err := io.ReadFull(conn, rest); err != nil {
+		return nil, fmt.Errorf("读取协议载荷失败: %w", err)
+	}
+
+	return append(header, rest...), nil
+}
+
 // ==================== 驱动客户端相关 ====================
 
 // DriverClient 与 C 驱动通信的客户端
 type DriverClient struct {
-	addr string
-	mu   sync.Mutex
+	addr     string
+	mu       sync.Mutex
+	sequence uint32 // 命令序列号
 }
 
 // NewDriverClient 创建新的驱动客户端
 func NewDriverClient(addr string) *DriverClient {
 	return &DriverClient{
-		addr: addr,
+		addr:     addr,
+		sequence: 0,
 	}
 }
 
-// sendCommand 发送命令到驱动程序
+// sendBinaryCommand 使用二进制协议发送命令
+func (dc *DriverClient) sendBinaryCommand(cmdType byte, filename string, pages int, taskID int, errorType int) (map[string]interface{}, error) {
+	dc.mu.Lock()
+	dc.sequence++
+	sequence := dc.sequence
+	dc.mu.Unlock()
+
+	// 连接到驱动服务器
+	conn, err := net.Dial("tcp", dc.addr)
+	if err != nil {
+		return nil, fmt.Errorf("无法连接到驱动: %v", err)
+	}
+	defer conn.Close()
+
+	// 构建请求
+	var request []byte
+	switch cmdType {
+	case CMD_GET_STATUS:
+		request = encodeGetStatusRequest(sequence)
+	case CMD_GET_QUEUE:
+		request = encodeGetQueueRequest(sequence)
+	case CMD_SUBMIT_JOB:
+		request = encodeSubmitJobRequest(filename, pages, sequence)
+	case CMD_CANCEL_JOB:
+		request = encodeCancelJobRequest(taskID, sequence)
+	case CMD_PAUSE_JOB:
+		request = encodePauseJobRequest(taskID, sequence)
+	case CMD_RESUME_JOB:
+		request = encodeResumeJobRequest(taskID, sequence)
+	case CMD_REFILL_PAPER:
+		request = encodeRefillPaperRequest(pages, sequence)
+	case CMD_REFILL_TONER:
+		request = encodeRefillTonerRequest(sequence)
+	case CMD_CLEAR_ERROR:
+		request = encodeClearErrorRequest(sequence)
+	case CMD_SIMULATE_ERROR:
+		request = encodeSimulateErrorRequest(errorType, sequence)
+	default:
+		return nil, fmt.Errorf("不支持的命令类型: %d", cmdType)
+	}
+
+	// 发送二进制请求
+	log.Printf("[DriverClient] 发送二进制请求 (命令: %d, 长度: %d 字节)", cmdType, len(request))
+	_, err = conn.Write(request)
+	if err != nil {
+		return nil, err
+	}
+
+	// Bug #6 修复：使用 readFullPacket 确保从 TCP 流中读取完整数据包
+	responseBytes, err := readFullPacket(conn)
+	if err != nil {
+		return nil, fmt.Errorf("读取驱动响应失败: %v", err)
+	}
+
+	log.Printf("[DriverClient] 接收二进制响应 (长度: %d 字节)", len(responseBytes))
+
+	// 解析二进制响应
+	result, err := parseBinaryResponse(responseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析响应失败: %v", err)
+	}
+
+	return result, nil
+}
+
+// sendCommand 发送命令到驱动程序（完全二进制协议支持）
 func (dc *DriverClient) sendCommand(cmd map[string]interface{}) (map[string]interface{}, error) {
+	if cmdVal, ok := cmd["cmd"]; ok {
+		cmdStr := fmt.Sprintf("%v", cmdVal)
+
+		// 提取通用参数
+		var filename string
+		var pages, taskID, errorType int = 0, 0, 0
+		if f, ok := cmd["filename"]; ok {
+			filename = fmt.Sprintf("%v", f)
+		}
+		if p, ok := cmd["pages"]; ok {
+			switch v := p.(type) {
+			case int:
+				pages = v
+			case float64:
+				pages = int(v)
+			}
+		}
+		if tid, ok := cmd["task_id"]; ok {
+			switch v := tid.(type) {
+			case int:
+				taskID = v
+			case float64:
+				taskID = int(v)
+			}
+		}
+		if et, ok := cmd["error_type"]; ok {
+			switch v := et.(type) {
+			case int:
+				errorType = v
+			case float64:
+				errorType = int(v)
+			}
+		}
+
+		// 所有命令都使用二进制协议
+		switch cmdStr {
+		case "get_status":
+			return dc.sendBinaryCommand(CMD_GET_STATUS, "", 0, 0, 0)
+		case "get_queue":
+			return dc.sendBinaryCommand(CMD_GET_QUEUE, "", 0, 0, 0)
+		case "submit_job":
+			return dc.sendBinaryCommand(CMD_SUBMIT_JOB, filename, pages, 0, 0)
+		case "cancel_job":
+			return dc.sendBinaryCommand(CMD_CANCEL_JOB, "", 0, taskID, 0)
+		case "pause_job":
+			return dc.sendBinaryCommand(CMD_PAUSE_JOB, "", 0, taskID, 0)
+		case "resume_job":
+			return dc.sendBinaryCommand(CMD_RESUME_JOB, "", 0, taskID, 0)
+		case "refill_paper":
+			return dc.sendBinaryCommand(CMD_REFILL_PAPER, "", pages, 0, 0)
+		case "refill_toner":
+			return dc.sendBinaryCommand(CMD_REFILL_TONER, "", 0, 0, 0)
+		case "clear_error":
+			return dc.sendBinaryCommand(CMD_CLEAR_ERROR, "", 0, 0, 0)
+		case "simulate_error":
+			return dc.sendBinaryCommand(CMD_SIMULATE_ERROR, "", 0, 0, errorType)
+		default:
+			return nil, fmt.Errorf("不支持的命令: %s", cmdStr)
+		}
+	}
+
+	// 默认使用 JSON 回退
+	return dc.sendJSONCommand(cmd)
+}
+
+// sendJSONCommand 使用 JSON 格式发送命令（回退方案）
+func (dc *DriverClient) sendJSONCommand(cmd map[string]interface{}) (map[string]interface{}, error) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
+
+	log.Printf("[DriverClient] 使用 JSON 回退模式发送命令: %v", cmd)
 
 	// 连接到驱动服务器
 	conn, err := net.Dial("tcp", dc.addr)
@@ -582,13 +1111,16 @@ func (dc *DriverClient) sendCommand(cmd map[string]interface{}) (map[string]inte
 
 // PrinterHandler 打印机处理器
 type PrinterHandler struct {
-	driver       *DriverClient
-	db           *Database
-	tokenMgr     *TokenManager
-	wsHub        *WebSocketHub
-	printQueue   *PrintJobQueue
-	nextTaskID   int
-	nextTaskIDMu sync.Mutex
+	driver          *DriverClient
+	db              *Database      // SQLite for backward compatibility
+	mysqlDB         *MySQLDatabase // MySQL for production
+	tokenMgr        *TokenManager
+	wsHub           *WebSocketHub
+	printQueue      *PrintJobQueue
+	progressTracker *ProgressTracker
+	pdfManager      *PDFManager
+	nextTaskID      int
+	nextTaskIDMu    sync.Mutex
 }
 
 // NewPrinterHandler 创建新的打印机处理器
@@ -943,8 +1475,11 @@ func (ph *PrinterHandler) CancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查权限：只有管理员或任务所有者可以取消任务
+	// Bug #8 修复：访问 jobs map 前必须持有读锁，防止数据竞争
+	ph.printQueue.mu.RLock()
 	job, exists := ph.printQueue.jobs[req.TaskID]
+	ph.printQueue.mu.RUnlock()
+
 	if exists && tokenInfo.Role != "admin" && job.UserID != tokenInfo.Username {
 		http.Error(w, "{\"error\": \"没有权限删除此任务\"}", http.StatusForbidden)
 		return
@@ -1138,9 +1673,22 @@ func (ph *PrinterHandler) SimulateError(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 将错误类型转换为数值（根据C驱动中定义的错误类型）
+	errorTypeMap := map[string]int{
+		"paper_jam":   1,
+		"paper_empty": 2,
+		"toner_low":   3,
+		"temperature": 4,
+	}
+	errorType := errorTypeMap[req.Error]
+	if errorType == 0 && req.Error != "" {
+		// 默认错误类型
+		errorType = 1
+	}
+
 	result, err := ph.driver.sendCommand(map[string]interface{}{
-		"cmd":   "simulate_error",
-		"error": req.Error,
+		"cmd":        "simulate_error",
+		"error_type": errorType,
 	})
 
 	if err != nil {
@@ -1494,10 +2042,27 @@ func (ph *PrinterHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	ph.wsHub.register <- client
 
+	// 如果是进度通知路由，注册进度监听器
+	path := r.URL.Path
+	isProgressRoute := path == "/ws/progress" || strings.Contains(path, "progress")
+
+	var progressListener chan *PrintJobNotification
+	var clientID string
+
+	if isProgressRoute && ph.progressTracker != nil {
+		clientID = fmt.Sprintf("client_%s_%.0f", conn.RemoteAddr(), float64(time.Now().UnixNano()))
+		progressListener = ph.progressTracker.RegisterListener(clientID)
+		log.Printf("[WebSocket] 进度监听器已注册: %s", clientID)
+	}
+
 	// 处理客户端消息
 	go func() {
 		defer func() {
 			ph.wsHub.unregister <- client
+			if isProgressRoute && ph.progressTracker != nil && clientID != "" {
+				ph.progressTracker.UnregisterListener(clientID)
+				log.Printf("[WebSocket] 进度监听器已注销: %s", clientID)
+			}
 			conn.Close()
 		}()
 
@@ -1524,6 +2089,11 @@ func (ph *PrinterHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 					client.send <- map[string]string{"type": "pong"}
 				case "subscribe":
 					client.send <- map[string]string{"type": "subscribed"}
+				case "get_progress":
+					if ph.progressTracker != nil {
+						// 发送所有活跃任务的进度
+						_ = msg // 占位符
+					}
 				default:
 					log.Printf("[WebSocket] 未知消息类型: %s", msgType)
 				}
@@ -1534,14 +2104,144 @@ func (ph *PrinterHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	// 发送消息给客户端
 	go func() {
 		defer conn.Close()
-		for message := range client.send {
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			err := conn.WriteJSON(message)
-			if err != nil {
-				return
+		for {
+			select {
+			case message, ok := <-client.send:
+				// Bug #10 修复：client.send 关闭后 ok=false，须退出，否则会无限循环读零值
+				if !ok {
+					return
+				}
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := conn.WriteJSON(message); err != nil {
+					return
+				}
+			case progressNotif, ok := <-progressListener:
+				if progressListener == nil {
+					continue
+				}
+				if !ok || progressNotif == nil {
+					return
+				}
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := conn.WriteJSON(progressNotif); err != nil {
+					return
+				}
 			}
 		}
 	}()
+}
+
+// GetRecentPDFs 获取最近的10个PDF（仅admin有权限）
+func (ph *PrinterHandler) GetRecentPDFs(w http.ResponseWriter, r *http.Request) {
+	log.Println("[Backend] 请求: 获取最近的PDF列表")
+
+	// 检查权限
+	tokenInfo, ok := ph.getTokenInfo(r)
+	if !ok {
+		http.Error(w, "{\"error\": \"未授权\"}", http.StatusUnauthorized)
+		return
+	}
+
+	// 仅 admin 有权限访问
+	if tokenInfo.Role != "admin" {
+		http.Error(w, "{\"error\": \"仅管理员有权限访问PDF历史\"}", http.StatusForbidden)
+		return
+	}
+
+	if ph.pdfManager == nil {
+		http.Error(w, "{\"error\": \"PDF管理器未初始化\"}", http.StatusInternalServerError)
+		return
+	}
+
+	// 获取最近10个PDF
+	recentPDFs := ph.pdfManager.GetRecentPDFs(10)
+
+	// 构造响应
+	type PDFInfo struct {
+		TaskID    int    `json:"task_id"`
+		Filename  string `json:"filename"`
+		FileSize  int64  `json:"file_size"`
+		FileHash  string `json:"file_hash"`
+		CreatedAt string `json:"created_at"`
+	}
+
+	var pdfList []PDFInfo
+	for _, pdf := range recentPDFs {
+		pdfList = append(pdfList, PDFInfo{
+			TaskID:    pdf.TaskID,
+			Filename:  pdf.Filename,
+			FileSize:  pdf.FileSize,
+			FileHash:  pdf.FileHash,
+			CreatedAt: pdf.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"pdfs":  pdfList,
+		"count": len(pdfList),
+	})
+
+	// 记录审计日志
+	if ph.mysqlDB != nil {
+		ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "view_pdf_history", fmt.Sprintf("获取了%d个PDF", len(pdfList)))
+	}
+}
+
+// DownloadPDF 下载PDF文件（仅admin有权限）
+func (ph *PrinterHandler) DownloadPDF(w http.ResponseWriter, r *http.Request) {
+	log.Println("[Backend] 请求: 下载PDF")
+
+	// 检查权限
+	tokenInfo, ok := ph.getTokenInfo(r)
+	if !ok {
+		http.Error(w, "{\"error\": \"未授权\"}", http.StatusUnauthorized)
+		return
+	}
+
+	// 仅 admin 有权限下载
+	if tokenInfo.Role != "admin" {
+		http.Error(w, "{\"error\": \"仅管理员有权限下载PDF\"}", http.StatusForbidden)
+		return
+	}
+
+	if ph.pdfManager == nil {
+		http.Error(w, "{\"error\": \"PDF管理器未初始化\"}", http.StatusInternalServerError)
+		return
+	}
+
+	// 从查询参数获取 task_id
+	taskIDStr := r.URL.Query().Get("task_id")
+	if taskIDStr == "" {
+		http.Error(w, "{\"error\": \"缺少task_id参数\"}", http.StatusBadRequest)
+		return
+	}
+
+	taskID, err := strconv.Atoi(taskIDStr)
+	if err != nil {
+		http.Error(w, "{\"error\": \"无效的task_id\"}", http.StatusBadRequest)
+		return
+	}
+
+	// 获取PDF文件
+	pdfData, err := ph.pdfManager.RetrievePDF(taskID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("{\"error\": \"%v\"}", err), http.StatusNotFound)
+		return
+	}
+
+	// 设置响应头
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"print_task_%d.pdf\"", taskID))
+	w.Header().Set("Content-Length", strconv.Itoa(len(pdfData)))
+
+	// 发送PDF数据
+	w.Write(pdfData)
+
+	// 记录审计日志
+	if ph.mysqlDB != nil {
+		ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "download_pdf", fmt.Sprintf("下载了任务%d的PDF", taskID))
+	}
 }
 
 func main() {
@@ -1549,16 +2249,54 @@ func main() {
 	fmt.Println("  网络打印机后端服务 v1.0")
 	fmt.Println("================================")
 
-	// 初始化数据库
-	db, err := NewDatabase("printer.db")
-	if err != nil {
-		log.Fatal("数据库初始化失败:", err)
+	// 初始化数据库层（支持 MySQL 和 SQLite）
+	var sqliteDB *Database
+	var mysqlDB *MySQLDatabase
+
+	// 尝试初始化 MySQL 数据库
+	var dbErr error
+	mysqlDB, dbErr = NewMySQLDatabase("root", "nihao", "localhost", "3306", "printer_db")
+	if dbErr != nil {
+		log.Printf("[Warning] MySQL 初始化失败: %v\n", dbErr)
+		log.Println("[Info] 降级到使用 SQLite 数据库...")
+
+		// 降级方案：使用 SQLite
+		sqliteDB, dbErr = NewDatabase("printer.db")
+		if dbErr != nil {
+			log.Fatal("SQLite 初始化失败:", dbErr)
+		}
+
+		// 创建默认用户
+		sqliteDB.CreateUser("admin", "admin123", "admin")
+		sqliteDB.CreateUser("user", "user123", "user")
+		sqliteDB.CreateUser("technician", "tech123", "technician")
+
+		log.Println("[Info] 使用 SQLite 作为主数据库")
+	} else {
+		// 创建默认用户
+		mysqlDB.CreateUser("admin", "admin123", "admin")
+		mysqlDB.CreateUser("user", "user123", "user")
+		mysqlDB.CreateUser("technician", "tech123", "technician")
+
+		log.Println("[Info] 使用 MySQL 作为主数据库")
 	}
 
-	// 创建默认用户（如果不存在）
-	db.CreateUser("admin", "admin123", "admin")
-	db.CreateUser("user", "user123", "user")
-	db.CreateUser("technician", "tech123", "technician")
+	// 初始化进度追踪器
+	progressTracker := NewProgressTracker()
+
+	// 初始化 PDF 管理器
+	pdfManager, err := NewPDFManager("./pdf_storage", 10, 1024) // 最多10个文件，1GB限制
+	if err != nil {
+		log.Printf("[Warning] PDF 管理器初始化失败: %v\n", err)
+	}
+
+	// 启动进度追踪器的后台通知处理
+	go func() {
+		for notification := range progressTracker.notifyChan {
+			// 处理通知... 这里可以集成到WebSocket
+			_ = notification
+		}
+	}()
 
 	// 创建驱动客户端
 	driver := NewDriverClient("localhost:9999")
@@ -1570,8 +2308,24 @@ func main() {
 	wsHub := NewWebSocketHub()
 	go wsHub.Run()
 
-	// 创建处理器
-	handler := NewPrinterHandler(driver, db, tokenMgr, wsHub)
+	// 创建处理器（使用 SQLite 作为主数据库）
+	var primaryDB *Database
+	if sqliteDB != nil {
+		primaryDB = sqliteDB
+	} else {
+		// 创建一个临时的 SQLite 数据库用于兼容性
+		// 实际上 MySQLDatabase 可以和 Database 一起使用，但需要分开
+		primaryDB, _ = NewDatabase(":memory:")
+	}
+
+	handler := NewPrinterHandler(driver, primaryDB, tokenMgr, wsHub)
+
+	// 设置 MySQL 数据库（如果可用）
+	handler.mysqlDB = mysqlDB
+
+	// 设置进度追踪器和 PDF 管理器
+	handler.progressTracker = progressTracker
+	handler.pdfManager = pdfManager
 
 	// CORS 中间件（修正版）
 	// 注意：Access-Control-Allow-Origin: * 与 Allow-Credentials: true 不可共存
@@ -1600,7 +2354,7 @@ func main() {
 	r.Use(corsMiddleware)
 
 	// 托管前端 HTML（推荐：从 http://localhost:8080 打开页面，彻底避免跨域问题）
-	// 将 printer_control_improved.html 与后端可执行文件放在同一目录即可
+	// 将 printer_control.html 与后端可执行文件放在同一目录即可
 	r.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
@@ -1631,6 +2385,10 @@ func main() {
 	// 任务管理端点
 	r.HandleFunc("/api/job/pause", handler.PauseJob).Methods("POST")
 	r.HandleFunc("/api/job/resume", handler.ResumeJob).Methods("POST")
+
+	// PDF 管理端点（仅admin有权限）
+	r.HandleFunc("/api/pdf/recent", handler.GetRecentPDFs).Methods("GET")
+	r.HandleFunc("/api/pdf/download", handler.DownloadPDF).Methods("GET")
 
 	// 用户管理端点
 	r.HandleFunc("/api/user/add", handler.AddUser).Methods("POST")

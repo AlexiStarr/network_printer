@@ -28,7 +28,12 @@
     #include <windows.h>
     #include <process.h>
     
-    #pragma comment(lib, "ws2_32.lib")
+    #ifdef _MSC_VER
+        #pragma comment(lib, "ws2_32.lib")
+    #else
+        /* MinGW/GCC: 链接 ws2_32 库通过命令行 -lws2_32 */
+        #pragma GCC diagnostic ignored "-Wunknown-pragmas"
+    #endif
     
     /* Socket 类型定义 */
     typedef int socklen_t;

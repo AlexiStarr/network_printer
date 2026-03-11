@@ -8,21 +8,7 @@
 #define DRIVER_SERVER_H
 
 #include "printer_simulator.h"
-
-/* 命令类型 */
-typedef enum {
-    CMD_GET_STATUS,      /* 获取状态 */
-    CMD_GET_QUEUE,       /* 获取队列 */
-    CMD_SUBMIT_JOB,      /* 提交任务 */
-    CMD_CANCEL_JOB,      /* 取消任务 */
-    CMD_PAUSE_JOB,       /* 暂停任务 */
-    CMD_RESUME_JOB,      /* 恢复任务 */
-    CMD_REFILL_PAPER,    /* 补充纸张 */
-    CMD_REFILL_TONER,    /* 补充碳粉 */
-    CMD_CLEAR_ERROR,     /* 清除错误 */
-    CMD_SIMULATE_ERROR,  /* 模拟错误 */
-    CMD_UNKNOWN
-} CommandType;
+#include "protocol.h"  /* CommandType 定义已移至 protocol.h */
 
 /* 请求结构 */
 typedef struct {
