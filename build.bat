@@ -65,7 +65,7 @@ if not exist "printer_simulator.c" (
 )
 
 echo 编译源文件...
-gcc -std=c17 -Wall -Wextra -O2 -o printer_driver.exe ^
+sudo gcc -std=c17 -Wall -Wextra -O2 -o printer_driver.exe ^
     printer_simulator.c ^
     driver_server.c ^
     main_driver.c ^
@@ -120,13 +120,6 @@ if %errorlevel% neq 0 (
 echo 编译二进制文件...
 sudo go build -o printer_backend.exe .
 if %errorlevel% neq 0 (
-    echo.
-    echo [Error] ✗ 后端编译失败
-    echo 请检查编译错误信息
-    exit /b 1
-)
-
-if not exist "printer_backend.exe" (
     echo.
     echo [Error] ✗ 后端编译失败
     echo 请检查编译错误信息

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -19,8 +18,6 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	_ "github.com/mattn/go-sqlite3"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // ==================== 二进制协议常量 ====================
@@ -42,270 +39,6 @@ const (
 	CMD_ACK            = 0xFE
 	CMD_ERROR_RESP     = 0xFF
 )
-
-// Database 数据库管理器
-type Database struct {
-	db *sql.DB
-	mu sync.RWMutex
-}
-
-// NewDatabase 创建新的数据库管理器
-func NewDatabase(path string) (*Database, error) {
-	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		return nil, err
-	}
-
-	// 创建表
-	schema := `
-	CREATE TABLE IF NOT EXISTS print_history (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		task_id INTEGER,
-		filename TEXT,
-		pages INTEGER,
-		printed_pages INTEGER,
-		status TEXT,
-		created_at DATETIME,
-		completed_at DATETIME,
-		user_id TEXT,
-		priority INTEGER DEFAULT 0
-	);
-
-	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT UNIQUE,
-		password_hash TEXT,
-		role TEXT,
-		created_at DATETIME
-	);
-
-	CREATE TABLE IF NOT EXISTS audit_log (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		user_id TEXT,
-		action TEXT,
-		details TEXT,
-		timestamp DATETIME
-	);
-
-	CREATE TABLE IF NOT EXISTS task_queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		task_id INTEGER UNIQUE,
-		filename TEXT,
-		pages INTEGER,
-		priority INTEGER,
-		status TEXT,
-		created_at DATETIME,
-		started_at DATETIME,
-		completed_at DATETIME
-	);
-	`
-
-	_, err = db.Exec(schema)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Database{db: db}, nil
-}
-
-// RecordPrintJob 记录打印任务
-func (d *Database) RecordPrintJob(taskID int, filename string, pages int, userID string, priority int) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	_, err := d.db.Exec(
-		`INSERT INTO print_history (task_id, filename, pages, status, created_at, user_id, priority) 
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		taskID, filename, pages, "submitted", time.Now(), userID, priority,
-	)
-	return err
-}
-
-// UpdatePrintJob 更新打印任务
-func (d *Database) UpdatePrintJob(taskID int, printedPages int, status string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	query := `UPDATE print_history SET printed_pages = ?, status = ? WHERE task_id = ?`
-	if status == "completed" {
-		query = `UPDATE print_history SET printed_pages = ?, status = ?, completed_at = ? WHERE task_id = ?`
-		_, err := d.db.Exec(query, printedPages, status, time.Now(), taskID)
-		return err
-	}
-
-	_, err := d.db.Exec(query, printedPages, status, taskID)
-	return err
-}
-
-// GetPrintHistory 获取打印历史
-func (d *Database) GetPrintHistory(userID string, limit int) ([]map[string]interface{}, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var rows *sql.Rows
-	var err error
-
-	if userID == "" {
-		rows, err = d.db.Query(
-			`SELECT task_id, filename, pages, printed_pages, status, created_at, user_id, priority 
-			 FROM print_history ORDER BY created_at DESC LIMIT ?`, limit,
-		)
-	} else {
-		rows, err = d.db.Query(
-			`SELECT task_id, filename, pages, printed_pages, status, created_at, user_id, priority 
-			 FROM print_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, userID, limit,
-		)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var history []map[string]interface{}
-	for rows.Next() {
-		var taskID, pages, printedPages, priority int
-		var filename, status, userID string
-		var createdAt time.Time
-
-		err := rows.Scan(&taskID, &filename, &pages, &printedPages, &status, &createdAt, &userID, &priority)
-		if err != nil {
-			return nil, err
-		}
-
-		history = append(history, map[string]interface{}{
-			"task_id":       taskID,
-			"filename":      filename,
-			"pages":         pages,
-			"printed_pages": printedPages,
-			"status":        status,
-			"created_at":    createdAt.Format(time.RFC3339),
-			"user_id":       userID,
-			"priority":      priority,
-		})
-	}
-
-	return history, nil
-}
-
-// CreateUser 创建用户
-func (d *Database) CreateUser(username, password, role string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-
-	_, err = d.db.Exec(
-		`INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)`,
-		username, string(hash), role, time.Now(),
-	)
-	return err
-}
-
-// VerifyUser 验证用户密码
-func (d *Database) VerifyUser(username, password string) (bool, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var hash string
-	err := d.db.QueryRow(
-		`SELECT password_hash FROM users WHERE username = ?`,
-		username,
-	).Scan(&hash)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, err
-	}
-
-	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil, nil
-}
-
-// GetUserRole 获取用户角色
-func (d *Database) GetUserRole(username string) (string, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var role string
-	err := d.db.QueryRow(
-		`SELECT role FROM users WHERE username = ?`,
-		username,
-	).Scan(&role)
-	return role, err
-}
-
-// RecordAuditLog 记录审计日志
-func (d *Database) RecordAuditLog(userID, action, details string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	_, err := d.db.Exec(
-		`INSERT INTO audit_log (user_id, action, details, timestamp) VALUES (?, ?, ?, ?)`,
-		userID, action, details, time.Now(),
-	)
-	return err
-}
-
-// DeleteUser 删除用户
-func (d *Database) DeleteUser(username string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	_, err := d.db.Exec(`DELETE FROM users WHERE username = ?`, username)
-	return err
-}
-
-// ListUsers 列出所有用户
-func (d *Database) ListUsers() ([]map[string]interface{}, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	rows, err := d.db.Query(
-		`SELECT username, role, created_at FROM users ORDER BY created_at DESC`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var users []map[string]interface{}
-	for rows.Next() {
-		var username, role string
-		var createdAt time.Time
-
-		err := rows.Scan(&username, &role, &createdAt)
-		if err != nil {
-			return nil, err
-		}
-
-		users = append(users, map[string]interface{}{
-			"username":   username,
-			"role":       role,
-			"created_at": createdAt.Format(time.RFC3339),
-		})
-	}
-
-	return users, nil
-}
-
-// UserExists 检查用户是否存在
-func (d *Database) UserExists(username string) (bool, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var count int
-	err := d.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ?`, username).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
 
 // ==================== WebSocket 相关 ====================
 
@@ -847,25 +580,31 @@ func parseBinaryResponse(data []byte) (map[string]interface{}, error) {
 		}
 
 	case CMD_GET_STATUS:
-		// StatusResponse 布局（与 binary_protocol.go 保持一致）：
+		// StatusResponse 布局（与 protocol.h 保持一致）：
 		// Status(1) + Error(1) + PaperPages(2) + TonerPercent(2) +
 		// Temperature(1) + PageCount(4) + QueueSize(2) + CurrentTaskID(1) + Reserved(3)
 		if len(responseData) >= 17 {
 			statusByte := responseData[0]
-			statusStr := "idle"
+			// C驱动 PrinterStatus 枚举：IDLE=0x00, PRINTING=0x01, PAUSED=0x02, ERROR=0x03, OFFLINE=0x04
+			statusStr := "offline"
 			switch statusByte {
+			case 0:
+				statusStr = "idle"
 			case 1:
 				statusStr = "printing"
 			case 2:
-				statusStr = "error"
-			case 3:
 				statusStr = "paused"
+			case 3:
+				statusStr = "error"
+			case 4:
+				statusStr = "offline"
 			}
 			result["success"] = true
 			result["status"] = statusStr
 			result["error_code"] = responseData[1]
 			result["paper_pages"] = float64(binary.LittleEndian.Uint16(responseData[2:4]))
-			result["toner_percent"] = float64(binary.LittleEndian.Uint16(responseData[4:6]))
+			// 注意：字段名用 toner_percentage，与前端 HTML 保持一致
+			result["toner_percentage"] = float64(binary.LittleEndian.Uint16(responseData[4:6]))
 			result["temperature"] = float64(responseData[6])
 			result["page_count"] = float64(binary.LittleEndian.Uint32(responseData[7:11]))
 			result["queue_size"] = float64(binary.LittleEndian.Uint16(responseData[11:13]))
@@ -918,11 +657,12 @@ func readFullPacket(conn net.Conn) ([]byte, error) {
 
 // ==================== 驱动客户端相关 ====================
 
-// DriverClient 与 C 驱动通信的客户端
+// DriverClient 与 C 驱动通信的客户端（持久长连接）
 type DriverClient struct {
 	addr     string
 	mu       sync.Mutex
-	sequence uint32 // 命令序列号
+	sequence uint32   // 命令序列号
+	conn     net.Conn // 持久 TCP 连接，nil 表示未连接
 }
 
 // NewDriverClient 创建新的驱动客户端
@@ -933,21 +673,38 @@ func NewDriverClient(addr string) *DriverClient {
 	}
 }
 
-// sendBinaryCommand 使用二进制协议发送命令
+// ensureConn 确保持久连接可用（调用者必须已持有 dc.mu）
+func (dc *DriverClient) ensureConn() error {
+	if dc.conn != nil {
+		return nil
+	}
+	conn, err := net.DialTimeout("tcp", dc.addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("无法连接到驱动 %s: %v", dc.addr, err)
+	}
+	dc.conn = conn
+	log.Printf("[DriverClient] 已建立持久连接到驱动 %s", dc.addr)
+	return nil
+}
+
+// closeConn 关闭并重置连接（调用者必须已持有 dc.mu）
+func (dc *DriverClient) closeConn() {
+	if dc.conn != nil {
+		dc.conn.Close()
+		dc.conn = nil
+		log.Println("[DriverClient] 驱动连接已关闭，下次请求时自动重连")
+	}
+}
+
+// sendBinaryCommand 使用二进制协议发送命令（复用持久连接）
 func (dc *DriverClient) sendBinaryCommand(cmdType byte, filename string, pages int, taskID int, errorType int) (map[string]interface{}, error) {
 	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
 	dc.sequence++
 	sequence := dc.sequence
-	dc.mu.Unlock()
 
-	// 连接到驱动服务器
-	conn, err := net.Dial("tcp", dc.addr)
-	if err != nil {
-		return nil, fmt.Errorf("无法连接到驱动: %v", err)
-	}
-	defer conn.Close()
-
-	// 构建请求
+	// 构建请求包
 	var request []byte
 	switch cmdType {
 	case CMD_GET_STATUS:
@@ -974,16 +731,33 @@ func (dc *DriverClient) sendBinaryCommand(cmdType byte, filename string, pages i
 		return nil, fmt.Errorf("不支持的命令类型: %d", cmdType)
 	}
 
-	// 发送二进制请求
-	log.Printf("[DriverClient] 发送二进制请求 (命令: %d, 长度: %d 字节)", cmdType, len(request))
-	_, err = conn.Write(request)
-	if err != nil {
+	// 确保连接可用（断线自动重连一次）
+	if err := dc.ensureConn(); err != nil {
 		return nil, err
 	}
 
-	// Bug #6 修复：使用 readFullPacket 确保从 TCP 流中读取完整数据包
-	responseBytes, err := readFullPacket(conn)
+	// 发送请求（带超时）
+	dc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	log.Printf("[DriverClient] 发送二进制请求 (命令: 0x%02X, 长度: %d 字节)", cmdType, len(request))
+	_, err := dc.conn.Write(request)
 	if err != nil {
+		dc.closeConn()
+		// 重连后重试一次
+		if err2 := dc.ensureConn(); err2 != nil {
+			return nil, fmt.Errorf("重连失败: %v", err2)
+		}
+		dc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err3 := dc.conn.Write(request); err3 != nil {
+			dc.closeConn()
+			return nil, fmt.Errorf("发送请求失败: %v", err3)
+		}
+	}
+
+	// 读取完整响应包（带超时）
+	dc.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	responseBytes, err := readFullPacket(dc.conn)
+	if err != nil {
+		dc.closeConn()
 		return nil, fmt.Errorf("读取驱动响应失败: %v", err)
 	}
 
@@ -1112,8 +886,7 @@ func (dc *DriverClient) sendJSONCommand(cmd map[string]interface{}) (map[string]
 // PrinterHandler 打印机处理器
 type PrinterHandler struct {
 	driver          *DriverClient
-	db              *Database      // SQLite for backward compatibility
-	mysqlDB         *MySQLDatabase // MySQL for production
+	mysqlDB         *MySQLDatabase
 	tokenMgr        *TokenManager
 	wsHub           *WebSocketHub
 	printQueue      *PrintJobQueue
@@ -1124,10 +897,10 @@ type PrinterHandler struct {
 }
 
 // NewPrinterHandler 创建新的打印机处理器
-func NewPrinterHandler(driver *DriverClient, db *Database, tokenMgr *TokenManager, wsHub *WebSocketHub) *PrinterHandler {
+func NewPrinterHandler(driver *DriverClient, mysqlDB *MySQLDatabase, tokenMgr *TokenManager, wsHub *WebSocketHub) *PrinterHandler {
 	handler := &PrinterHandler{
 		driver:     driver,
-		db:         db,
+		mysqlDB:    mysqlDB,
 		tokenMgr:   tokenMgr,
 		wsHub:      wsHub,
 		printQueue: NewPrintJobQueue(),
@@ -1231,14 +1004,14 @@ func (ph *PrinterHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verified, err := ph.db.VerifyUser(req.Username, req.Password)
+	verified, err := ph.mysqlDB.VerifyUser(req.Username, req.Password)
 	if err != nil || !verified {
 		http.Error(w, "{\"error\": \"用户名或密码错误\"}", http.StatusUnauthorized)
-		ph.db.RecordAuditLog(req.Username, "login_failed", "Invalid credentials")
+		ph.mysqlDB.RecordAuditLog(req.Username, "login_failed", "Invalid credentials")
 		return
 	}
 
-	role, err := ph.db.GetUserRole(req.Username)
+	role, err := ph.mysqlDB.GetUserRole(req.Username)
 	if err != nil {
 		http.Error(w, "{\"error\": \"获取用户角色失败\"}", http.StatusInternalServerError)
 		return
@@ -1250,7 +1023,7 @@ func (ph *PrinterHandler) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Set-Cookie", fmt.Sprintf("auth_token=%s; Path=/; HttpOnly; Max-Age=86400", token))
 	json.NewEncoder(w).Encode(map[string]string{"token": token, "role": role})
 
-	ph.db.RecordAuditLog(req.Username, "login_success", "")
+	ph.mysqlDB.RecordAuditLog(req.Username, "login_success", "")
 }
 
 // Logout 登出
@@ -1281,7 +1054,7 @@ func (ph *PrinterHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "logout", "")
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "logout", "")
 }
 
 // GetPrintHistory 获取打印历史
@@ -1302,7 +1075,7 @@ func (ph *PrinterHandler) GetPrintHistory(w http.ResponseWriter, r *http.Request
 		userID = tokenInfo.Username
 	}
 
-	history, err := ph.db.GetPrintHistory(userID, limit)
+	history, err := ph.mysqlDB.GetRecentPrintHistory(userID, limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("{\"error\": \"%v\"}", err), http.StatusInternalServerError)
 		return
@@ -1311,7 +1084,7 @@ func (ph *PrinterHandler) GetPrintHistory(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"history": history})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "view_history", "")
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "view_history", "")
 }
 
 // GetStatus 获取打印机状态
@@ -1417,7 +1190,7 @@ func (ph *PrinterHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 记录到数据库
-	ph.db.RecordPrintJob(taskID, req.Filename, req.Pages, tokenInfo.Username, req.Priority)
+	ph.mysqlDB.RecordPrintJob(taskID, req.Filename, req.Pages, tokenInfo.Username, req.Priority)
 
 	// 计算实际优先级（管理员优先级最高）
 	actualPriority := req.Priority
@@ -1452,7 +1225,7 @@ func (ph *PrinterHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		"task_id": taskID,
 	})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "submit_job", fmt.Sprintf("task_id=%d", taskID))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "submit_job", fmt.Sprintf("task_id=%d", taskID))
 }
 
 // CancelJob 取消打印任务
@@ -1518,7 +1291,7 @@ func (ph *PrinterHandler) CancelJob(w http.ResponseWriter, r *http.Request) {
 		ph.printQueue.mu.Unlock()
 
 		// 更新数据库
-		ph.db.UpdatePrintJob(req.TaskID, 0, "cancelled")
+		ph.mysqlDB.UpdatePrintJob(req.TaskID, 0, "cancelled")
 
 		// 广播到 WebSocket 客户端
 		ph.wsHub.Broadcast(map[string]interface{}{
@@ -1526,7 +1299,7 @@ func (ph *PrinterHandler) CancelJob(w http.ResponseWriter, r *http.Request) {
 			"task_id": req.TaskID,
 		})
 
-		ph.db.RecordAuditLog(tokenInfo.Username, "cancel_job", fmt.Sprintf("task_id=%d", req.TaskID))
+		ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "cancel_job", fmt.Sprintf("task_id=%d", req.TaskID))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1578,7 +1351,7 @@ func (ph *PrinterHandler) RefillPaper(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "refill_paper", fmt.Sprintf("pages=%d", req.Pages))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "refill_paper", fmt.Sprintf("pages=%d", req.Pages))
 }
 
 // RefillToner 补充碳粉
@@ -1614,7 +1387,7 @@ func (ph *PrinterHandler) RefillToner(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "refill_toner", "")
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "refill_toner", "")
 }
 
 // ClearError 清除错误
@@ -1644,7 +1417,7 @@ func (ph *PrinterHandler) ClearError(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "clear_error", "")
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "clear_error", "")
 }
 
 // SimulateError 模拟硬件错误
@@ -1705,7 +1478,7 @@ func (ph *PrinterHandler) SimulateError(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "simulate_error", fmt.Sprintf("error=%s", req.Error))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "simulate_error", fmt.Sprintf("error=%s", req.Error))
 }
 
 // PauseJob 暂停打印任务
@@ -1754,7 +1527,7 @@ func (ph *PrinterHandler) PauseJob(w http.ResponseWriter, r *http.Request) {
 	if inQueue {
 		job.Status = "paused"
 	}
-	ph.db.UpdatePrintJob(req.TaskID, 0, "paused")
+	ph.mysqlDB.UpdatePrintJob(req.TaskID, 0, "paused")
 
 	// 广播到 WebSocket 客户端
 	ph.wsHub.Broadcast(map[string]interface{}{
@@ -1764,7 +1537,7 @@ func (ph *PrinterHandler) PauseJob(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
-	ph.db.RecordAuditLog(tokenInfo.Username, "pause_job", fmt.Sprintf("task_id=%d", req.TaskID))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "pause_job", fmt.Sprintf("task_id=%d", req.TaskID))
 }
 
 // ResumeJob 恢复打印任务
@@ -1813,7 +1586,7 @@ func (ph *PrinterHandler) ResumeJob(w http.ResponseWriter, r *http.Request) {
 	if inQueue {
 		job.Status = "printing"
 	}
-	ph.db.UpdatePrintJob(req.TaskID, 0, "printing")
+	ph.mysqlDB.UpdatePrintJob(req.TaskID, 0, "printing")
 
 	// 广播到 WebSocket 客户端
 	ph.wsHub.Broadcast(map[string]interface{}{
@@ -1823,7 +1596,7 @@ func (ph *PrinterHandler) ResumeJob(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
-	ph.db.RecordAuditLog(tokenInfo.Username, "resume_job", fmt.Sprintf("task_id=%d", req.TaskID))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "resume_job", fmt.Sprintf("task_id=%d", req.TaskID))
 }
 
 // AddUser 添加新用户
@@ -1883,7 +1656,7 @@ func (ph *PrinterHandler) AddUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 检查用户是否已存在
-	exists, err := ph.db.UserExists(req.Username)
+	exists, err := ph.mysqlDB.UserExists(req.Username)
 	if err != nil {
 		http.Error(w, "{\"error\": \"数据库错误\"}", http.StatusInternalServerError)
 		return
@@ -1895,7 +1668,7 @@ func (ph *PrinterHandler) AddUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 创建用户
-	err = ph.db.CreateUser(req.Username, req.Password, req.Role)
+	err = ph.mysqlDB.CreateUser(req.Username, req.Password, req.Role)
 	if err != nil {
 		http.Error(w, "{\"error\": \"创建用户失败\"}", http.StatusInternalServerError)
 		return
@@ -1904,7 +1677,7 @@ func (ph *PrinterHandler) AddUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"success": "true", "message": "用户已创建"})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "add_user", fmt.Sprintf("username=%s,role=%s", req.Username, req.Role))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "add_user", fmt.Sprintf("username=%s,role=%s", req.Username, req.Role))
 }
 
 // DeleteUserHandler 删除用户
@@ -1940,7 +1713,7 @@ func (ph *PrinterHandler) DeleteUserHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 删除用户
-	err = ph.db.DeleteUser(req.Username)
+	err = ph.mysqlDB.DeleteUser(req.Username)
 	if err != nil {
 		http.Error(w, "{\"error\": \"删除用户失败\"}", http.StatusInternalServerError)
 		return
@@ -1949,7 +1722,7 @@ func (ph *PrinterHandler) DeleteUserHandler(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"success": "true", "message": "用户已删除"})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "delete_user", fmt.Sprintf("username=%s", req.Username))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "delete_user", fmt.Sprintf("username=%s", req.Username))
 }
 
 // ListUsersHandler 列出所有用户
@@ -1968,7 +1741,7 @@ func (ph *PrinterHandler) ListUsersHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	users, err := ph.db.ListUsers()
+	users, err := ph.mysqlDB.ListUsers()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("{\"error\": \"%v\"}", err), http.StatusInternalServerError)
 		return
@@ -1977,7 +1750,7 @@ func (ph *PrinterHandler) ListUsersHandler(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"users": users})
 
-	ph.db.RecordAuditLog(tokenInfo.Username, "list_users", "")
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "list_users", "")
 }
 
 // Health 健康检查
@@ -2249,87 +2022,47 @@ func main() {
 	fmt.Println("  网络打印机后端服务 v1.0")
 	fmt.Println("================================")
 
-	// 初始化数据库层（支持 MySQL 和 SQLite）
-	var sqliteDB *Database
-	var mysqlDB *MySQLDatabase
-
-	// 尝试初始化 MySQL 数据库
-	var dbErr error
-	mysqlDB, dbErr = NewMySQLDatabase("root", "nihao", "localhost", "3306", "printer_db")
-	if dbErr != nil {
-		log.Printf("[Warning] MySQL 初始化失败: %v\n", dbErr)
-		log.Println("[Info] 降级到使用 SQLite 数据库...")
-
-		// 降级方案：使用 SQLite
-		sqliteDB, dbErr = NewDatabase("printer.db")
-		if dbErr != nil {
-			log.Fatal("SQLite 初始化失败:", dbErr)
-		}
-
-		// 创建默认用户
-		sqliteDB.CreateUser("admin", "admin123", "admin")
-		sqliteDB.CreateUser("user", "user123", "user")
-		sqliteDB.CreateUser("technician", "tech123", "technician")
-
-		log.Println("[Info] 使用 SQLite 作为主数据库")
-	} else {
-		// 创建默认用户
-		mysqlDB.CreateUser("admin", "admin123", "admin")
-		mysqlDB.CreateUser("user", "user123", "user")
-		mysqlDB.CreateUser("technician", "tech123", "technician")
-
-		log.Println("[Info] 使用 MySQL 作为主数据库")
+	// ==================== 初始化 MySQL ====================
+	mysqlDB, err := NewMySQLDatabase("root", "nihao", "localhost", "3306", "printer_db")
+	if err != nil {
+		log.Fatalf("[Fatal] MySQL 初始化失败，服务无法启动: %v\n"+
+			"  请检查：\n"+
+			"  1. MySQL 是否已启动\n"+
+			"  2. 用户名/密码是否正确\n"+
+			"  3. 端口 3306 是否开放\n", err)
 	}
+	log.Println("[Info] MySQL 连接成功")
 
-	// 初始化进度追踪器
+	// 创建默认用户（已存在则跳过，CreateUser 内部会忽略唯一键冲突）
+	mysqlDB.CreateUser("admin", "admin123", "admin")
+	mysqlDB.CreateUser("user", "user123", "user")
+	mysqlDB.CreateUser("technician", "tech123", "technician")
+
+	// ==================== 初始化其他组件 ====================
 	progressTracker := NewProgressTracker()
 
-	// 初始化 PDF 管理器
-	pdfManager, err := NewPDFManager("./pdf_storage", 10, 1024) // 最多10个文件，1GB限制
+	pdfManager, err := NewPDFManager("./pdf_storage", 10, 1024)
 	if err != nil {
 		log.Printf("[Warning] PDF 管理器初始化失败: %v\n", err)
 	}
 
-	// 启动进度追踪器的后台通知处理
 	go func() {
 		for notification := range progressTracker.notifyChan {
-			// 处理通知... 这里可以集成到WebSocket
 			_ = notification
 		}
 	}()
 
-	// 创建驱动客户端
 	driver := NewDriverClient("localhost:9999")
-
-	// 创建 Token 管理器
 	tokenMgr := NewTokenManager()
-
-	// 创建 WebSocket Hub
 	wsHub := NewWebSocketHub()
 	go wsHub.Run()
 
-	// 创建处理器（使用 SQLite 作为主数据库）
-	var primaryDB *Database
-	if sqliteDB != nil {
-		primaryDB = sqliteDB
-	} else {
-		// 创建一个临时的 SQLite 数据库用于兼容性
-		// 实际上 MySQLDatabase 可以和 Database 一起使用，但需要分开
-		primaryDB, _ = NewDatabase(":memory:")
-	}
-
-	handler := NewPrinterHandler(driver, primaryDB, tokenMgr, wsHub)
-
-	// 设置 MySQL 数据库（如果可用）
-	handler.mysqlDB = mysqlDB
-
-	// 设置进度追踪器和 PDF 管理器
+	// ==================== 创建处理器 ====================
+	handler := NewPrinterHandler(driver, mysqlDB, tokenMgr, wsHub)
 	handler.progressTracker = progressTracker
 	handler.pdfManager = pdfManager
 
-	// CORS 中间件（修正版）
-	// 注意：Access-Control-Allow-Origin: * 与 Allow-Credentials: true 不可共存
-	// 对 file:// 页面（Origin 为 "null"）需反射 "null"，而非使用通配符 *
+	// ==================== CORS 中间件 ====================
 	corsMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
@@ -2349,12 +2082,10 @@ func main() {
 		})
 	}
 
-	// 创建路由
+	// ==================== 路由 ====================
 	r := mux.NewRouter()
 	r.Use(corsMiddleware)
 
-	// 托管前端 HTML（推荐：从 http://localhost:8080 打开页面，彻底避免跨域问题）
-	// 将 printer_control.html 与后端可执行文件放在同一目录即可
 	r.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
@@ -2362,14 +2093,9 @@ func main() {
 		http.ServeFile(w, req, "printer_control.html")
 	}).Methods("GET")
 
-	// 认证相关端点
 	r.HandleFunc("/api/auth/login", handler.Login).Methods("POST")
 	r.HandleFunc("/api/auth/logout", handler.Logout).Methods("POST")
-
-	// WebSocket 端点
 	r.HandleFunc("/ws", handler.HandleWebSocket)
-
-	// API 端点
 	r.HandleFunc("/health", handler.Health).Methods("GET")
 	r.HandleFunc("/api/status", handler.GetStatus).Methods("GET")
 	r.HandleFunc("/api/queue", handler.GetQueue).Methods("GET")

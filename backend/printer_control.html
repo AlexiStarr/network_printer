@@ -680,9 +680,9 @@ async function refreshDashboard() {
   const d = res.data;
 
   // Status badge
-  const statusMap = { idle:'idle', printing:'printing', error:'error', offline:'offline' };
+  const statusMap = { idle:'idle', printing:'printing', paused:'paused', error:'error', offline:'offline' };
   const s = statusMap[d.status] || 'offline';
-  const sLabel = { idle:'空闲', printing:'打印中', error:'错误', offline:'离线' }[s] || s;
+  const sLabel = { idle:'空闲', printing:'打印中', paused:'已暂停', error:'错误', offline:'离线' }[s] || s;
   document.getElementById('stat-status').innerHTML = `<span class="badge ${s}">${sLabel}</span>`;
 
   const err = d.error && d.error !== 'OK' ? d.error : '';
@@ -718,8 +718,10 @@ async function refreshDashboard() {
   if (sr.ok) document.getElementById('stat-queue').textContent = sr.data.queue_size ?? '—';
 
   // Warnings
-  if (toner < 10) toast('⚠ 碳粉严重不足！', 'error');
-  if (paper < 50) toast('⚠ 纸张即将耗尽！', 'error');
+  // 缺料警告：仅在打印过程中触发（空闲/离线时的低值属于正常初始状态，不应自动报警）
+  // 如需手动查看耗材状态，请使用「耗材管理」页面
+  if (s === 'printing' && toner < 10) toast('⚠ 碳粉严重不足！', 'error');
+  if (s === 'printing' && paper < 50) toast('⚠ 纸张即将耗尽！', 'error');
 }
 
 function showAlert(msg, type) {

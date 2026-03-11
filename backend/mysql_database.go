@@ -9,6 +9,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -33,6 +34,28 @@ type MySQLDatabase struct {
 
 // NewMySQLDatabase 创建新的 MySQL 数据库管理器
 func NewMySQLDatabase(user, password, host, port, dbname string) (*MySQLDatabase, error) {
+	// 第一步：不指定数据库名连接，确保 printer_db 存在
+	// 常见失败原因：数据库未创建（MySQL 不会自动创建 DB，与 SQLite 不同）
+	dsnNoDB := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&parseTime=true&timeout=5s",
+		user, password, host, port)
+	dbInit, err := sql.Open("mysql", dsnNoDB)
+	if err != nil {
+		return nil, fmt.Errorf("MySQL 驱动初始化失败: %w", err)
+	}
+	// 测试基础连接（用户名/密码/端口）
+	if err := dbInit.Ping(); err != nil {
+		dbInit.Close()
+		return nil, fmt.Errorf("MySQL 连接测试失败（请检查用户名/密码/端口/MySQL是否启动）: %w", err)
+	}
+	// 自动建库
+	_, err = dbInit.Exec(fmt.Sprintf(
+		"CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", dbname))
+	dbInit.Close()
+	if err != nil {
+		return nil, fmt.Errorf("创建数据库 %s 失败: %w", dbname, err)
+	}
+
+	// 第二步：携带数据库名重新连接
 	dsn := fmt.Sprintf(MySQLDSNFormat, user, password, host, port, dbname)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -41,7 +64,8 @@ func NewMySQLDatabase(user, password, host, port, dbname string) (*MySQLDatabase
 
 	// 测试连接
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("MySQL连接测试失败: %w", err)
+		db.Close()
+		return nil, fmt.Errorf("MySQL 连接测试失败: %w", err)
 	}
 
 	// 设置连接池参数
@@ -51,9 +75,11 @@ func NewMySQLDatabase(user, password, host, port, dbname string) (*MySQLDatabase
 
 	// 创建表
 	if err := createTables(db); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("创建表失败: %w", err)
 	}
 
+	log.Printf("[MySQL] 已成功连接到 %s:%s/%s", host, port, dbname)
 	return &MySQLDatabase{db: db}, nil
 }
 

@@ -109,7 +109,9 @@ static unsigned int __stdcall handle_client(void* arg) {
             printf("[Driver] 收到完整的二进制协议数据包, 命令: %d, 长度: %d\n", header->cmd, data_len);
             
             // 处理请求并生成响应
-            int response_len = protocol_handle_request(global_printer, buffer, 12 + data_len, response_buf, sizeof(response_buf));
+            // 注意：必须传入 total_packet_size（含4字节校验和），否则 verify_and_parse_header
+            // 的长度校验 (PROTOCOL_HEADER_SIZE + hdr->length + 4 != len) 会永远失败
+            int response_len = protocol_handle_request(global_printer, buffer, total_packet_size, response_buf, sizeof(response_buf));
             
             if (response_len > 0) {
                 // 发送响应
