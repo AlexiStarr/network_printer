@@ -283,14 +283,14 @@
       <div class="nav-item" onclick="navigate('queue')" id="nav-queue">
         <span class="icon">☰</span><span>打印队列</span>
       </div>
-      <div class="nav-item" onclick="navigate('history')" id="nav-history">
+      <div class="nav-item admin-only" onclick="navigate('history')" id="nav-history">
         <span class="icon">◷</span><span>打印历史</span>
       </div>
       <div class="nav-section">操作</div>
       <div class="nav-item" onclick="navigate('submit')" id="nav-submit">
         <span class="icon">⊕</span><span>提交任务</span>
       </div>
-      <div class="nav-item" onclick="navigate('supplies')" id="nav-supplies">
+      <div class="nav-item staff-only" onclick="navigate('supplies')" id="nav-supplies">
         <span class="icon">◉</span><span>耗材管理</span>
       </div>
       <div class="nav-section admin-only" style="display:none">高级</div>
@@ -367,9 +367,9 @@
       <div class="card">
         <div class="card-title">设备信息</div>
         <div class="info-grid" id="printer-info">
-          <div class="info-key">型号</div><div class="info-val" id="info-model">—</div>
-          <div class="info-key">序列号</div><div class="info-val" id="info-serial">—</div>
-          <div class="info-key">固件</div><div class="info-val" id="info-firmware">—</div>
+          <div class="info-key">型号</div><div class="info-val" id="info-model">NetworkPrinter Pro X200</div>
+          <div class="info-key">序列号</div><div class="info-val" id="info-serial">NP-X200-2024001</div>
+          <div class="info-key">固件</div><div class="info-val" id="info-firmware">3.2.1</div>
         </div>
       </div>
 
@@ -405,7 +405,7 @@
     <!-- History -->
     <div class="page" id="page-history">
       <div class="page-title">打印历史</div>
-      <div class="page-sub">已完成及历史打印记录</div>
+      <div class="page-sub">已完成及历史打印记录（仅管理员可见）</div>
       <div class="section-header">
         <h3></h3>
         <button class="btn" onclick="loadHistory()">↻ 刷新</button>
@@ -413,9 +413,9 @@
       <div class="card" style="padding:0">
         <table class="tbl">
           <thead><tr>
-            <th>任务ID</th><th>文件名</th><th>页数</th><th>用户</th><th>优先级</th><th>状态</th><th>提交时间</th>
+            <th>任务ID</th><th>文件名</th><th>页数</th><th>用户</th><th>优先级</th><th>状态</th><th>提交时间</th><th>操作</th>
           </tr></thead>
-          <tbody id="history-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+          <tbody id="history-body"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -423,11 +423,15 @@
     <!-- Submit -->
     <div class="page" id="page-submit">
       <div class="page-title">提交打印任务</div>
-      <div class="page-sub">向打印机提交新任务</div>
+      <div class="page-sub">向打印机提交新任务，可同时上传 PDF 文件</div>
       <div class="inline-form" style="max-width:480px">
         <div class="field">
+          <label>上传 PDF 文件（可选）</label>
+          <input type="file" id="job-pdf" accept=".pdf" onchange="onPDFSelected()" style="color:var(--text)" />
+        </div>
+        <div class="field">
           <label>文件名</label>
-          <input type="text" id="job-filename" placeholder="例如: report_2024.pdf" />
+          <input type="text" id="job-filename" placeholder="例如: report_2024.pdf（上传后自动填充）" />
         </div>
         <div class="form-grid">
           <div class="field">
@@ -478,7 +482,7 @@
               <option value="PAPER_EMPTY">缺纸 (PAPER_EMPTY)</option>
               <option value="TONER_LOW">碳粉不足 (TONER_LOW)</option>
               <option value="TONER_EMPTY">缺碳粉 (TONER_EMPTY)</option>
-              <option value="HEAT_UNAVAILABLE">加热器故障 (HEAT_UNAVAILABLE)</option>
+              <option value="HEAT_UNAVAILABLE">加热故障 (HEAT_UNAVAILABLE)</option>
               <option value="MOTOR_FAILURE">电机故障 (MOTOR_FAILURE)</option>
               <option value="SENSOR_FAILURE">传感器故障 (SENSOR_FAILURE)</option>
             </select>
@@ -608,6 +612,10 @@ function initApp() {
   const adminEls = document.querySelectorAll('.admin-only');
   adminEls.forEach(el => el.style.display = (userRole === 'admin') ? '' : 'none');
 
+  // staff-only：admin 和 technician 均可见，普通 user 隐藏
+  const staffEls = document.querySelectorAll('.staff-only');
+  staffEls.forEach(el => el.style.display = (userRole === 'admin' || userRole === 'technician') ? '' : 'none');
+
   navigate('dashboard');
   connectWS();
   refreshTimer = setInterval(refreshDashboard, 3000);
@@ -665,8 +673,84 @@ function handleWSEvent(msg) {
   };
   const t = labels[msg.event];
   if (t) toast('📡 ' + t, msg.event.includes('error') ? 'error' : 'success');
-  refreshDashboard();
+
+  // job_progress / job_completed 直接更新进度区域，无需全量刷新
+  if (msg.event === 'job_progress' || msg.event === 'job_completed') {
+    updateActiveJobCard(msg);
+  } else {
+    refreshDashboard();
+  }
   if (document.getElementById('page-queue').classList.contains('active')) loadQueue();
+}
+
+// 用 task_id 为键维护活跃任务的最新状态
+const activeJobsMap = {};
+
+function updateActiveJobCard(msg) {
+  const id = msg.task_id;
+  if (!id) return;
+  if (msg.event === 'job_completed') {
+    delete activeJobsMap[id];
+  } else {
+    activeJobsMap[id] = {
+      task_id: id,
+      filename: activeJobsMap[id]?.filename || `任务 #${id}`,
+      printed_pages: msg.printed_pages ?? 0,
+      total_pages: msg.total_pages ?? 0,
+      progress: msg.progress ?? 0,
+      status: msg.status || 'printing',
+    };
+  }
+  renderActiveJobs();
+}
+
+function renderActiveJobs() {
+  const el = document.getElementById('active-jobs-list');
+  const jobs = Object.values(activeJobsMap).filter(j => j.status === 'printing' || j.status === 'paused');
+  if (jobs.length === 0) {
+    el.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:20px">暂无活动打印任务</div>';
+    return;
+  }
+  el.innerHTML = jobs.map(j => {
+    const pct = Math.min(100, Math.round(j.progress || 0));
+    const statusLabel = j.status === 'paused' ? '⏸ 已暂停' : '🖨 打印中';
+    const statusColor = j.status === 'paused' ? 'var(--accent)' : 'var(--blue)';
+    return `<div style="background:var(--surface2);border-radius:6px;padding:10px 14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:13px;font-weight:600">${j.filename}</span>
+        <span style="font-size:11px;font-family:var(--mono);color:${statusColor}">${statusLabel}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1;background:var(--surface);border-radius:3px;height:6px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:var(--blue);transition:width .4s ease;border-radius:3px"></div>
+        </div>
+        <span style="font-size:11px;font-family:var(--mono);color:var(--muted);min-width:80px;text-align:right">
+          ${j.printed_pages} / ${j.total_pages} 页 &nbsp;${pct}%
+        </span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// 每次刷新队列时，用 API 数据填充 activeJobsMap（防止刷新页面后 WS 事件未到导致空白）
+function syncActiveJobsFromQueue(queueData) {
+  const activeStatuses = new Set(['printing', 'paused']);
+  // 清除已不在队列里的任务
+  for (const id in activeJobsMap) {
+    if (!queueData.find(j => String(j.task_id) === id)) delete activeJobsMap[id];
+  }
+  // 更新/插入活跃任务
+  queueData.filter(j => activeStatuses.has(j.status)).forEach(j => {
+    activeJobsMap[j.task_id] = {
+      task_id: j.task_id,
+      filename: j.filename,
+      printed_pages: j.printed_pages || 0,
+      total_pages: j.pages || 0,
+      progress: j.progress || 0,
+      status: j.status,
+    };
+  });
+  renderActiveJobs();
 }
 
 // ─── Dashboard ─────────────────────────────────────────────
@@ -685,8 +769,17 @@ async function refreshDashboard() {
   const sLabel = { idle:'空闲', printing:'打印中', paused:'已暂停', error:'错误', offline:'离线' }[s] || s;
   document.getElementById('stat-status').innerHTML = `<span class="badge ${s}">${sLabel}</span>`;
 
-  const err = d.error && d.error !== 'OK' ? d.error : '';
-  document.getElementById('stat-error-text').textContent = err || '—';
+  // 错误详情：error 字段是后端返回的 HardwareError 名称（如 "PAPER_EMPTY"）
+  const errorNameMap = {
+    'OK': '', 'PAPER_EMPTY': '⚠ 缺纸', 'TONER_LOW': '⚠ 碳粉不足',
+    'TONER_EMPTY': '⚠ 碳粉耗尽', 'HEAT_UNAVAILABLE': '⚠ 加热故障',
+    'MOTOR_FAILURE': '⚠ 电机故障', 'SENSOR_FAILURE': '⚠ 传感器故障'
+  };
+  const errorRaw = d.error || 'OK';
+  const errDisplay = errorNameMap[errorRaw] !== undefined ? errorNameMap[errorRaw] : ('⚠ ' + errorRaw);
+  const errEl = document.getElementById('stat-error-text');
+  errEl.textContent = errDisplay || '—';
+  errEl.style.color = errDisplay ? 'var(--red)' : 'var(--muted)';
 
   // Numbers
   const temp = d.temperature ?? '—';
@@ -696,10 +789,11 @@ async function refreshDashboard() {
 
   document.getElementById('stat-pages').textContent = d.page_count ?? '—';
 
-  // Paper
+  // Paper（paper_max = 500，与 C 驱动 printer_simulator.c 一致）
+  const paperMax = 500;
   const paper = d.paper_pages ?? 0;
   document.getElementById('stat-paper').textContent = paper;
-  document.getElementById('bar-paper').style.width = Math.min(100, paper/5000*100) + '%';
+  document.getElementById('bar-paper').style.width = Math.min(100, paper / paperMax * 100) + '%';
 
   // Toner
   const toner = d.toner_percentage ?? 0;
@@ -708,18 +802,18 @@ async function refreshDashboard() {
   tonerEl.className = 'stat-value mono' + (toner < 10 ? ' bad' : toner < 30 ? ' warn' : ' good');
   document.getElementById('bar-toner').style.width = toner + '%';
 
-  // Device info
-  document.getElementById('info-model').textContent = d.model || '—';
-  document.getElementById('info-serial').textContent = d.serial_number || '—';
-  document.getElementById('info-firmware').textContent = d.firmware_version || '—';
+  // 设备信息字段由驱动初始化时写死，二进制协议不传输，无需每次覆盖
 
   // Queue size from stats
   const sr = await api('GET', '/api/stats');
   if (sr.ok) document.getElementById('stat-queue').textContent = sr.data.queue_size ?? '—';
 
+  // 同步仪表盘实时进度区域（与队列数据保持一致）
+  const qr = await api('GET', '/api/queue');
+  if (qr.ok && qr.data.queue) syncActiveJobsFromQueue(qr.data.queue);
+
   // Warnings
-  // 缺料警告：仅在打印过程中触发（空闲/离线时的低值属于正常初始状态，不应自动报警）
-  // 如需手动查看耗材状态，请使用「耗材管理」页面
+  // 缺料警告：仅在打印过程中触发
   if (s === 'printing' && toner < 10) toast('⚠ 碳粉严重不足！', 'error');
   if (s === 'printing' && paper < 50) toast('⚠ 纸张即将耗尽！', 'error');
 }
@@ -748,8 +842,11 @@ async function loadQueue() {
 
   if (rows.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空</td></tr>';
+    syncActiveJobsFromQueue([]);
     return;
   }
+
+  syncActiveJobsFromQueue(rows);
 
   tbody.innerHTML = rows.map(j => {
     const pct = j.pages > 0 ? Math.round((j.printed_pages||0)/j.pages*100) : 0;
@@ -800,15 +897,33 @@ async function resumeJob(id) {
 // ─── History ───────────────────────────────────────────────
 async function loadHistory() {
   const tbody = document.getElementById('history-body');
-  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">加载中…</td></tr>';
   const res = await api('GET', '/api/history');
-  if (!res.ok) { tbody.innerHTML = `<tr><td colspan="7" class="empty">加载失败</td></tr>`; return; }
+  if (!res.ok) { tbody.innerHTML = `<tr><td colspan="8" class="empty">加载失败</td></tr>`; return; }
   const hist = res.data.history || [];
-  if (hist.length === 0) { tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无历史记录</td></tr>'; return; }
-  const statusColor = { submitted:'var(--muted)', printing:'var(--blue)', completed:'var(--green)', cancelled:'var(--red)', paused:'var(--accent)' };
+  if (hist.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无历史记录</td></tr>'; return; }
+
+  // 管理员额外拉取有 PDF 的任务列表（task_id 集合）
+  const pdfTaskIDs = new Set();
+  if (userRole === 'admin') {
+    const pr = await api('GET', '/api/pdf/recent');
+    if (pr.ok && pr.data.pdfs) {
+      pr.data.pdfs.forEach(p => pdfTaskIDs.add(p.task_id));
+    }
+  }
+
+  const statusColor = {
+    submitted:'var(--muted)', printing:'var(--blue)',
+    completed:'var(--green)', cancelled:'var(--red)', paused:'var(--accent)'
+  };
   tbody.innerHTML = hist.map(h => {
     const t = new Date(h.created_at).toLocaleString('zh-CN');
     const c = statusColor[h.status] || 'var(--muted)';
+    const hasPDF = pdfTaskIDs.has(h.task_id);
+    const dlBtn = (userRole === 'admin' && hasPDF)
+      ? `<button class="btn" style="padding:2px 10px;font-size:11px"
+           onclick="downloadPDF(${h.task_id}, '${h.filename.replace(/'/g,"\\'")}')">⬇ PDF</button>`
+      : '<span style="color:var(--muted);font-size:11px">—</span>';
     return `<tr>
       <td class="mono">#${h.task_id}</td>
       <td>${h.filename}</td>
@@ -817,30 +932,96 @@ async function loadHistory() {
       <td class="mono">${h.priority}</td>
       <td style="color:${c};font-family:var(--mono);font-size:11px">${h.status}</td>
       <td style="font-size:11px;color:var(--muted)">${t}</td>
+      <td>${dlBtn}</td>
     </tr>`;
   }).join('');
 }
 
+async function downloadPDF(taskID, filename) {
+  const token = document.cookie.split(';').map(c=>c.trim())
+    .find(c=>c.startsWith('auth_token='))?.split('=')[1] || '';
+  try {
+    const resp = await fetch(`/api/pdf/download?task_id=${taskID}`, {
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      credentials: 'include'
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      toast('下载失败: ' + (err.error || resp.status), 'error');
+      return;
+    }
+    // 触发浏览器下载
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `print_task_${taskID}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast(`PDF 下载成功: ${filename}`, 'success');
+  } catch(e) {
+    toast('下载出错: ' + e.message, 'error');
+  }
+}
+
 // ─── Submit Job ────────────────────────────────────────────
+function onPDFSelected() {
+  const fileInput = document.getElementById('job-pdf');
+  const file = fileInput.files[0];
+  if (file) {
+    // 自动填充文件名
+    const fnInput = document.getElementById('job-filename');
+    if (!fnInput.value) fnInput.value = file.name;
+  }
+}
+
 async function submitJob() {
   const filename = document.getElementById('job-filename').value.trim();
   const pages = parseInt(document.getElementById('job-pages').value);
   const priority = parseInt(document.getElementById('job-priority').value) || 0;
+  const pdfFile = document.getElementById('job-pdf').files[0];
   const result = document.getElementById('submit-result');
 
   if (!filename) { result.style.color='var(--red)'; result.textContent='请填写文件名'; return; }
   if (!pages || pages < 1) { result.style.color='var(--red)'; result.textContent='页数必须大于0'; return; }
 
-  const res = await api('POST', '/api/job/submit', { filename, pages, priority });
-  if (res.ok && res.data.success) {
-    result.style.color = 'var(--green)';
-    result.textContent = `✓ 任务已提交，ID: #${res.data.task_id}`;
-    toast('任务已提交 #' + res.data.task_id, 'success');
-    document.getElementById('job-filename').value = '';
-  } else {
+  // 构造 FormData（支持 PDF 上传）
+  const formData = new FormData();
+  formData.append('filename', filename);
+  formData.append('pages', String(pages));
+  formData.append('priority', String(priority));
+  if (pdfFile) formData.append('pdf', pdfFile);
+
+  // 获取 token
+  const token = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('auth_token='))?.split('=')[1] || '';
+  result.style.color = 'var(--muted)';
+  result.textContent = '提交中...';
+
+  try {
+    const resp = await fetch('/api/job/submit', {
+      method: 'POST',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      credentials: 'include',
+      body: formData
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      result.style.color = 'var(--green)';
+      const pdfHint = data.has_pdf ? '（已存储 PDF）' : '';
+      result.textContent = `✓ 任务已提交，ID: #${data.task_id} ${pdfHint}`;
+      toast('任务已提交 #' + data.task_id + (data.has_pdf ? ' + PDF' : ''), 'success');
+      document.getElementById('job-filename').value = '';
+      document.getElementById('job-pdf').value = '';
+    } else {
+      result.style.color = 'var(--red)';
+      result.textContent = '✗ ' + (data.error || '提交失败');
+      toast('提交失败: ' + (data.error || ''), 'error');
+    }
+  } catch(e) {
     result.style.color = 'var(--red)';
-    result.textContent = '✗ ' + (res.data.error || '提交失败');
-    toast('提交失败: ' + (res.data.error || ''), 'error');
+    result.textContent = '✗ 网络错误: ' + e.message;
   }
 }
 

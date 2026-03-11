@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+
+	// "database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	// "golang.org/x/crypto/bcrypt"
 )
 
 // ==================== 二进制协议常量 ====================
@@ -178,13 +181,14 @@ type PrintJobQueue struct {
 
 // PrintJob 打印任务
 type PrintJob struct {
-	TaskID    int
-	Filename  string
-	Pages     int
-	Priority  int
-	Status    string
-	CreatedAt time.Time
-	UserID    string
+	TaskID       int
+	Filename     string
+	Pages        int
+	PrintedPages int
+	Priority     int
+	Status       string
+	CreatedAt    time.Time
+	UserID       string
 }
 
 // NewPrintJobQueue 创建新的打印任务队列
@@ -557,12 +561,18 @@ func parseBinaryResponse(data []byte) (map[string]interface{}, error) {
 	responseData := data[12 : 12+int(dataLen)]
 	result := make(map[string]interface{})
 
-	// Bug #7 修复：按命令类型解码二进制载荷，而非尝试 JSON
 	switch cmd {
 	case CMD_ACK:
-		// ACK 无载荷，表示成功
+		// ACK 响应：length=1，payload 是 1 字节 status 码
 		result["success"] = true
-		if dataLen >= 4 {
+		if dataLen >= 1 {
+			result["ack_status"] = float64(responseData[0])
+		}
+
+	case CMD_SUBMIT_JOB:
+		// 提交任务成功响应：length=4，payload 是 uint32 task_id
+		result["success"] = true
+		if len(responseData) >= 4 {
 			result["task_id"] = float64(binary.LittleEndian.Uint32(responseData[0:4]))
 		}
 
@@ -599,9 +609,27 @@ func parseBinaryResponse(data []byte) (map[string]interface{}, error) {
 			case 4:
 				statusStr = "offline"
 			}
+
+			// HardwareError 枚举转可读字符串（与 C protocol.h 完全对齐）
+			errorCodeByte := responseData[1]
+			errorNameMap := map[uint8]string{
+				0: "OK",
+				1: "PAPER_EMPTY",
+				2: "TONER_LOW",
+				3: "TONER_EMPTY",
+				4: "HEAT_UNAVAILABLE",
+				5: "MOTOR_FAILURE",
+				6: "SENSOR_FAILURE",
+			}
+			errorName, ok := errorNameMap[errorCodeByte]
+			if !ok {
+				errorName = fmt.Sprintf("UNKNOWN(0x%02X)", errorCodeByte)
+			}
+
 			result["success"] = true
 			result["status"] = statusStr
-			result["error_code"] = responseData[1]
+			result["error_code"] = errorCodeByte
+			result["error"] = errorName // 前端直接用 d.error 展示
 			result["paper_pages"] = float64(binary.LittleEndian.Uint16(responseData[2:4]))
 			// 注意：字段名用 toner_percentage，与前端 HTML 保持一致
 			result["toner_percentage"] = float64(binary.LittleEndian.Uint16(responseData[4:6]))
@@ -612,12 +640,72 @@ func parseBinaryResponse(data []byte) (map[string]interface{}, error) {
 		}
 
 	case CMD_GET_QUEUE:
-		// 队列响应：Count(2) + TaskProgress 条目数组
+		// 队列响应：Count(2) + QueueItem[] 数组
+		// QueueItem 布局（与 protocol.h __attribute__((packed)) 一致）：
+		//   task_id(4) + status(1) + total_pages(2) + printed_pages(2) +
+		//   priority(1) + paper_size(1) + submit_time(4) + filename(64) = 79 字节
+		const queueItemSize = 79
 		result["success"] = true
-		if len(responseData) >= 2 {
-			count := binary.LittleEndian.Uint16(responseData[0:2])
-			result["queue_size"] = float64(count)
+		if len(responseData) < 2 {
+			break
 		}
+		count := int(binary.LittleEndian.Uint16(responseData[0:2]))
+		result["queue_size"] = float64(count)
+
+		items := make([]map[string]interface{}, 0, count)
+		taskStatusName := func(s uint8) string {
+			// C 驱动 task status 复用 PrinterStatus 枚举
+			switch s {
+			case 0:
+				return "queued" // PRINTER_IDLE → 排队等待
+			case 1:
+				return "printing" // PRINTER_PRINTING
+			case 2:
+				return "paused" // PRINTER_PAUSED
+			case 3:
+				return "error"
+			default:
+				return "queued"
+			}
+		}
+		offset := 2
+		for i := 0; i < count; i++ {
+			if offset+queueItemSize > len(responseData) {
+				break
+			}
+			chunk := responseData[offset : offset+queueItemSize]
+			taskID := binary.LittleEndian.Uint32(chunk[0:4])
+			status := chunk[4]
+			totalPages := binary.LittleEndian.Uint16(chunk[5:7])
+			printedPages := binary.LittleEndian.Uint16(chunk[7:9])
+			// priority=chunk[9], paper_size=chunk[10], submit_time=chunk[11:15]
+			// filename: chunk[15:79]，找第一个 \0
+			filenameBytes := chunk[15:79]
+			nameEnd := 64
+			for j, b := range filenameBytes {
+				if b == 0 {
+					nameEnd = j
+					break
+				}
+			}
+			filename := string(filenameBytes[:nameEnd])
+
+			var progress float64
+			if totalPages > 0 {
+				progress = float64(printedPages) / float64(totalPages) * 100
+			}
+
+			items = append(items, map[string]interface{}{
+				"task_id":       float64(taskID),
+				"status":        taskStatusName(status),
+				"total_pages":   float64(totalPages),
+				"printed_pages": float64(printedPages),
+				"progress":      progress,
+				"filename":      filename,
+			})
+			offset += queueItemSize
+		}
+		result["items"] = items
 
 	default:
 		// 未知响应类型，返回成功+原始字节（供调试）
@@ -831,54 +919,11 @@ func (dc *DriverClient) sendCommand(cmd map[string]interface{}) (map[string]inte
 		case "simulate_error":
 			return dc.sendBinaryCommand(CMD_SIMULATE_ERROR, "", 0, 0, errorType)
 		default:
-			return nil, fmt.Errorf("不支持的命令: %s", cmdStr)
+			return nil, fmt.Errorf("[DriverClient] 未知命令: %s", cmdStr)
 		}
 	}
 
-	// 默认使用 JSON 回退
-	return dc.sendJSONCommand(cmd)
-}
-
-// sendJSONCommand 使用 JSON 格式发送命令（回退方案）
-func (dc *DriverClient) sendJSONCommand(cmd map[string]interface{}) (map[string]interface{}, error) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	log.Printf("[DriverClient] 使用 JSON 回退模式发送命令: %v", cmd)
-
-	// 连接到驱动服务器
-	conn, err := net.Dial("tcp", dc.addr)
-	if err != nil {
-		return nil, fmt.Errorf("无法连接到驱动: %v", err)
-	}
-	defer conn.Close()
-
-	// 发送命令
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = conn.Write(data)
-	if err != nil {
-		return nil, err
-	}
-
-	// 接收响应
-	response := make([]byte, 8192)
-	n, err := conn.Read(response)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-
-	// 解析响应
-	var result map[string]interface{}
-	err = json.Unmarshal(response[:n], &result)
-	if err != nil {
-		return nil, fmt.Errorf("无法解析驱动响应: %v", err)
-	}
-
-	return result, nil
+	return nil, fmt.Errorf("[DriverClient] 命令格式错误：缺少 'cmd' 字段")
 }
 
 // ==================== HTTP 处理器相关 ====================
@@ -954,10 +999,90 @@ func (ph *PrinterHandler) syncDriverStatus() {
 	ph.updateTaskStatuses(queueResult)
 }
 
-// updateTaskStatuses 根据驱动程序队列更新任务状态
+// updateTaskStatuses 根据驱动程序队列更新 Go 侧任务状态和进度
 func (ph *PrinterHandler) updateTaskStatuses(queueResult map[string]interface{}) {
-	// 这里可以实现更复杂的同步逻辑
-	// 例如：检查驱动程序中的任务状态，更新后端队列
+	items, ok := queueResult["items"].([]map[string]interface{})
+	if !ok {
+		return
+	}
+
+	// 建立驱动队列的 task_id → item 映射，方便 O(1) 查找
+	driverItems := make(map[int]map[string]interface{}, len(items))
+	for _, item := range items {
+		if id, ok := item["task_id"].(float64); ok {
+			driverItems[int(id)] = item
+		}
+	}
+
+	ph.printQueue.mu.Lock()
+	defer ph.printQueue.mu.Unlock()
+
+	for taskID, job := range ph.printQueue.jobs {
+		driverItem, existsInDriver := driverItems[taskID]
+
+		if existsInDriver {
+			// 任务仍在驱动队列中：同步状态和进度
+			newStatus, _ := driverItem["status"].(string)
+			printedPages := 0
+			if pp, ok := driverItem["printed_pages"].(float64); ok {
+				printedPages = int(pp)
+			}
+			progress := 0.0
+			if p, ok := driverItem["progress"].(float64); ok {
+				progress = p
+			}
+
+			// 仅在有变化时才更新（避免无意义的广播）
+			changed := job.Status != newStatus || job.PrintedPages != printedPages
+
+			if changed {
+				log.Printf("[Sync] 任务 #%d 状态更新: %s→%s, 已打印: %d/%d (%.0f%%)",
+					taskID, job.Status, newStatus, printedPages, job.Pages, progress)
+				job.Status = newStatus
+				job.PrintedPages = printedPages
+
+				// 广播进度更新到 WebSocket
+				ph.wsHub.Broadcast(map[string]interface{}{
+					"event":         "job_progress",
+					"task_id":       taskID,
+					"status":        newStatus,
+					"printed_pages": printedPages,
+					"total_pages":   job.Pages,
+					"progress":      progress,
+				})
+
+				// 更新数据库
+				ph.mysqlDB.UpdatePrintJob(taskID, printedPages, newStatus)
+			}
+		} else {
+			// 任务不在驱动队列中
+			// 只有处于活跃状态（submitted/printing/paused）的才认为是完成
+			if job.Status == "printing" || job.Status == "submitted" || job.Status == "queued" {
+				log.Printf("[Sync] 任务 #%d 已从驱动队列消失，标记为 completed", taskID)
+				job.Status = "completed"
+				job.PrintedPages = job.Pages // 完成时已打页数 = 总页数
+
+				ph.wsHub.Broadcast(map[string]interface{}{
+					"event":         "job_completed",
+					"task_id":       taskID,
+					"printed_pages": job.Pages,
+					"total_pages":   job.Pages,
+					"progress":      100.0,
+				})
+
+				ph.mysqlDB.UpdatePrintJob(taskID, job.Pages, "completed")
+			}
+		}
+	}
+
+	// 从 Go 堆中移除已完成/取消的任务（保持 heap 干净）
+	newHeap := ph.printQueue.heap[:0]
+	for _, job := range ph.printQueue.heap {
+		if job.Status != "completed" && job.Status != "cancelled" {
+			newHeap = append(newHeap, job)
+		}
+	}
+	ph.printQueue.heap = newHeap
 }
 
 // getNextTaskID 获取下一个任务ID
@@ -1122,11 +1247,17 @@ func (ph *PrinterHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 	})
 
 	for _, job := range sortedJobs {
+		progress := 0.0
+		if job.Pages > 0 {
+			progress = float64(job.PrintedPages) / float64(job.Pages) * 100
+		}
 		queue = append(queue, map[string]interface{}{
-			"task_id":  job.TaskID,
-			"filename": job.Filename,
-			"pages":    job.Pages,
-			"status":   job.Status,
+			"task_id":       job.TaskID,
+			"filename":      job.Filename,
+			"pages":         job.Pages,
+			"printed_pages": job.PrintedPages,
+			"progress":      progress,
+			"status":        job.Status,
 		})
 	}
 	ph.printQueue.mu.RUnlock()
@@ -1150,59 +1281,109 @@ func (ph *PrinterHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Filename string `json:"filename"`
-		Pages    int    `json:"pages"`
-		Priority int    `json:"priority"`
+	// ── 解析请求（兼容 JSON 和 multipart/form-data）──────────────────
+	var filename string
+	var pages, priority int
+	var pdfData []byte
+
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		// multipart 模式：表单字段 + 可选 PDF 文件
+		if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB 上限
+			http.Error(w, "{\"error\": \"解析 multipart 表单失败\"}", http.StatusBadRequest)
+			return
+		}
+		filename = r.FormValue("filename")
+		pages, _ = strconv.Atoi(r.FormValue("pages"))
+		priority, _ = strconv.Atoi(r.FormValue("priority"))
+
+		// 读取 PDF 文件（可选）
+		file, header, fileErr := r.FormFile("pdf")
+		if fileErr == nil {
+			defer file.Close()
+			pdfData, _ = io.ReadAll(file)
+			// 如果前端没填文件名，使用上传的文件名
+			if filename == "" {
+				filename = header.Filename
+			}
+			log.Printf("[Backend] 收到 PDF 文件: %s, 大小: %d bytes", header.Filename, len(pdfData))
+		}
+	} else {
+		// JSON 模式（向后兼容）
+		var req struct {
+			Filename string `json:"filename"`
+			Pages    int    `json:"pages"`
+			Priority int    `json:"priority"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "{\"error\": \"解析请求失败\"}", http.StatusBadRequest)
+			return
+		}
+		filename = req.Filename
+		pages = req.Pages
+		priority = req.Priority
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "{\"error\": \"解析请求失败\"}", http.StatusBadRequest)
+	// ── 参数校验 ────────────────────────────────────────────────────
+	if filename == "" {
+		http.Error(w, "{\"error\": \"文件名不能为空\"}", http.StatusBadRequest)
+		return
+	}
+	if pages < 1 {
+		http.Error(w, "{\"error\": \"页数必须大于 0\"}", http.StatusBadRequest)
 		return
 	}
 
-	// Bug #5 修复: 确保任务ID始终与驱动同步
+	// ── 发送给 C 驱动 ────────────────────────────────────────────────
 	driverResult, err := ph.driver.sendCommand(map[string]interface{}{
 		"cmd":      "submit_job",
-		"filename": req.Filename,
-		"pages":    req.Pages,
+		"filename": filename,
+		"pages":    pages,
 	})
-
 	if err != nil {
 		http.Error(w, fmt.Sprintf("{\"error\": \"%v\"}", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 验证驱动成功，优先使用驱动分配的 task_id
 	driverSuccess, okSuccess := driverResult["success"].(bool)
 	if !okSuccess || !driverSuccess {
-		http.Error(w, "{\"error\": \"驱动程序提交失败\"}", http.StatusInternalServerError)
+		errMsg := "驱动程序提交失败"
+		if e, hasErr := driverResult["error"].(string); hasErr {
+			errMsg = e
+		}
+		http.Error(w, fmt.Sprintf("{\"error\": \"%s\"}", errMsg), http.StatusInternalServerError)
 		return
 	}
 
+	// 优先使用驱动分配的 task_id
 	var taskID int
 	if driverID, ok2 := driverResult["task_id"].(float64); ok2 && driverID > 0 {
 		taskID = int(driverID)
 	} else {
-		// 驱动未返回有效ID，使用本地ID
 		taskID = ph.getNextTaskID()
 	}
 
-	// 记录到数据库
-	ph.mysqlDB.RecordPrintJob(taskID, req.Filename, req.Pages, tokenInfo.Username, req.Priority)
-
-	// 计算实际优先级（管理员优先级最高）
-	actualPriority := req.Priority
-	if tokenInfo.Role == "admin" {
-		actualPriority = req.Priority + 1000 // 管理员任务额外加 1000
+	// ── 存储 PDF（如果有上传）────────────────────────────────────────
+	if len(pdfData) > 0 && ph.pdfManager != nil {
+		if _, pdfErr := ph.pdfManager.StorePDF(taskID, pdfData); pdfErr != nil {
+			// PDF 存储失败不阻断任务提交，只记录警告
+			log.Printf("[Backend] PDF 存储失败 (task_id=%d): %v", taskID, pdfErr)
+		} else {
+			log.Printf("[Backend] PDF 已存储 (task_id=%d, file=%s)", taskID, filename)
+		}
 	}
 
-	// 加入优先级队列
+	// ── 记录数据库 & 入队 ───────────────────────────────────────────
+	ph.mysqlDB.RecordPrintJob(taskID, filename, pages, tokenInfo.Username, priority)
+
+	actualPriority := priority
+	if tokenInfo.Role == "admin" {
+		actualPriority = priority + 1000
+	}
 	job := &PrintJob{
 		TaskID:    taskID,
-		Filename:  req.Filename,
-		Pages:     req.Pages,
+		Filename:  filename,
+		Pages:     pages,
 		Priority:  actualPriority,
 		Status:    "submitted",
 		CreatedAt: time.Now(),
@@ -1214,18 +1395,20 @@ func (ph *PrinterHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	ph.wsHub.Broadcast(map[string]interface{}{
 		"event":    "job_submitted",
 		"task_id":  taskID,
-		"filename": req.Filename,
-		"pages":    req.Pages,
-		"priority": req.Priority,
+		"filename": filename,
+		"pages":    pages,
+		"priority": priority,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
+	hasPDF := len(pdfData) > 0
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"task_id": taskID,
+		"has_pdf": hasPDF,
 	})
 
-	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "submit_job", fmt.Sprintf("task_id=%d", taskID))
+	ph.mysqlDB.RecordAuditLog(tokenInfo.Username, "submit_job", fmt.Sprintf("task_id=%d,file=%s,has_pdf=%v", taskID, filename, hasPDF))
 }
 
 // CancelJob 取消打印任务
@@ -1446,17 +1629,21 @@ func (ph *PrinterHandler) SimulateError(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 将错误类型转换为数值（根据C驱动中定义的错误类型）
+	// 将错误类型字符串转换为 C 驱动的 HardwareError 枚举值
+	// 枚举定义来自 protocol.h: HARDWARE_OK=0, PAPER_EMPTY=1, TONER_LOW=2,
+	//                           TONER_EMPTY=3, HEAT_UNAVAILABLE=4, MOTOR_FAILURE=5, SENSOR_FAILURE=6
 	errorTypeMap := map[string]int{
-		"paper_jam":   1,
-		"paper_empty": 2,
-		"toner_low":   3,
-		"temperature": 4,
+		"PAPER_EMPTY":      1,
+		"TONER_LOW":        2,
+		"TONER_EMPTY":      3,
+		"HEAT_UNAVAILABLE": 4,
+		"MOTOR_FAILURE":    5,
+		"SENSOR_FAILURE":   6,
 	}
-	errorType := errorTypeMap[req.Error]
-	if errorType == 0 && req.Error != "" {
-		// 默认错误类型
-		errorType = 1
+	errorType, validError := errorTypeMap[req.Error]
+	if !validError {
+		http.Error(w, fmt.Sprintf("{\"error\": \"未知错误类型: %s\"}", req.Error), http.StatusBadRequest)
+		return
 	}
 
 	result, err := ph.driver.sendCommand(map[string]interface{}{

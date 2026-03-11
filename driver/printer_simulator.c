@@ -20,7 +20,7 @@ Printer* printer_init() {
     strcpy(printer->firmware_version, "3.2.1");
 
     /* 初始化耗材 */
-    printer->paper_pages = 500;
+    printer->paper_pages = 0;     /* 初始纸张为空，需要管理员主动补充 */
     printer->paper_max = 500;     /* 纸张最大容量 */
     printer->toner_percentage = 100;
 

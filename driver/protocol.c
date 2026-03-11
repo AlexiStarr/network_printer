@@ -178,27 +178,24 @@ static ProtocolHeader* verify_and_parse_header(uint8_t* buffer, size_t len) {
  */
 int decode_submit_job_request(const uint8_t* buffer, size_t len,
                               SubmitJobRequest* req, char* filename, size_t filename_max) {
-    ProtocolHeader* hdr = verify_and_parse_header((uint8_t*)buffer, len);
-    if (hdr == NULL || hdr->cmd != CMD_SUBMIT_JOB) return -1;
-    
-    const uint8_t* data = buffer + PROTOCOL_HEADER_SIZE;
-    size_t data_len = hdr->length;
-    
-    if (data_len < sizeof(SubmitJobRequest)) return -1;
-    
-    /* 复制请求头 */
-    memcpy(req, data, sizeof(SubmitJobRequest));
-    
-    /* 检查文件名长度 */
-    if (req->filename_len > filename_max || req->filename_len > data_len - sizeof(SubmitJobRequest)) {
+    /* buffer 是已剥离协议头后的纯 payload，不含 magic/header */
+    if (buffer == NULL || req == NULL || filename == NULL) return -1;
+
+    /* payload 至少要能放下定长结构体 */
+    if (len < sizeof(SubmitJobRequest)) return -1;
+
+    memcpy(req, buffer, sizeof(SubmitJobRequest));
+
+    /* 校验文件名长度合法性 */
+    if (req->filename_len > filename_max ||
+        req->filename_len > len - sizeof(SubmitJobRequest)) {
         return -1;
     }
-    
-    /* 复制文件名 */
-    const uint8_t* filename_data = data + sizeof(SubmitJobRequest);
+
+    const uint8_t* filename_data = buffer + sizeof(SubmitJobRequest);
     memcpy(filename, filename_data, req->filename_len);
-    filename[req->filename_len] = '\0';  /* 确保以null结尾 */
-    
+    filename[req->filename_len] = '\0';
+
     return 0;
 }
 
