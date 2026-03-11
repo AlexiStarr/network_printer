@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#              网络打印机系统 Linux/Mac 编译脚本                               #
+#              网络打印机系统 Linux/Mac 编译脚本                                   #
 #                      Cross-Platform Build Script v2.0                        #
 #                                                                              #
 ################################################################################
@@ -159,28 +159,13 @@ compile_backend() {
     fi
     
     print_info "编译二进制文件..."
-    if go build -o printer_backend main.go; then
+    if go build -o printer_backend .; then
         print_success "后端编译成功"
         print_info "输出文件: $BACKEND_DIR/printer_backend"
     else
         print_error "后端编译失败"
         return 1
     fi
-}
-
-prepare_tests() {
-    echo -e "\n${YELLOW}[Step 3/3] 准备测试工具...${NC}"
-    cd "$TESTS_DIR"
-    
-    local test_files=("auto_test.sh" "simple_test.sh")
-    for file in "${test_files[@]}"; do
-        if [ -f "$file" ]; then
-            chmod +x "$file"
-            print_info "✓ $file"
-        fi
-    done
-    
-    print_success "测试工具已准备完成"
 }
 
 # ============================================================================
@@ -221,13 +206,9 @@ case "${1:-all}" in
     backend)
         compile_backend || exit 1
         ;;
-    test)
-        prepare_tests || exit 1
-        ;;
     all)
         compile_driver || exit 1
         compile_backend || exit 1
-        prepare_tests || exit 1
         ;;
     clean)
         clean_build
@@ -239,7 +220,6 @@ case "${1:-all}" in
         echo "示例:"
         echo "  $0 driver      - 仅编译驱动程序"
         echo "  $0 backend     - 仅编译后端服务"
-        echo "  $0 test        - 仅准备测试工具"
         echo "  $0 all         - 编译全部（默认）"
         echo "  $0 clean       - 清理编译文件"
         echo

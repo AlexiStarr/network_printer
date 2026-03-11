@@ -2210,7 +2210,7 @@ func main() {
 	fmt.Println("================================")
 
 	// ==================== 初始化 MySQL ====================
-	mysqlDB, err := NewMySQLDatabase("root", "nihao", "localhost", "3306", "printer_db")
+	mysqlDB, err := NewMySQLDatabase("root", "nihaonihao", "localhost", "3306", "printer_db")
 	if err != nil {
 		log.Fatalf("[Fatal] MySQL 初始化失败，服务无法启动: %v\n"+
 			"  请检查：\n"+

@@ -7,6 +7,7 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+#include <string.h>
 #include <time.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -89,7 +90,7 @@
     #define SOCK_ERROR SOCKET_ERROR
 
 
-/* ==================== Linux 平台 ==================== */
+/* ==================== Linux/macOS 平台 ==================== */
 #else
     #include <unistd.h>
     #include <sys/socket.h>
@@ -118,9 +119,6 @@
     #define mutex_unlock(m) pthread_mutex_unlock(m)
     #define mutex_destroy(m) pthread_mutex_destroy(m)
     
-    /* 信号处理 */
-    #define signal_set_handler(sig, handler) signal(sig, handler)
-    
     /* 睡眠 */
     #define sleep_ms(ms) usleep((ms) * 1000)
     #define sleep_sec(sec) sleep(sec)
@@ -137,7 +135,9 @@
         }
     
     #define INVALID_SOCK -1
+    #define INVALID_SOCKET (-1)    /* 新增：与非Windows平台兼容 */
     #define SOCK_ERROR -1
+    #define SOCKET_ERROR -1
     #define closesocket close
 
 #endif

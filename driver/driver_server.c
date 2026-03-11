@@ -48,7 +48,12 @@ void free_response(Response* resp) {
 }
 
 /* 处理客户端连接 */
-static unsigned int __stdcall handle_client(void* arg) {
+#ifdef _WIN32
+static unsigned int __stdcall handle_client(void* arg)
+#else
+static void* handle_client(void* arg)
+#endif
+{
     SOCKET client_sock = *(SOCKET*)arg;
     free(arg);
     
@@ -68,39 +73,31 @@ static unsigned int __stdcall handle_client(void* arg) {
         
         accumulated_bytes += bytes;
         
-        /* 检查是否有完整的数据包
-         * 格式: [12字节头] + [可变长度数据] + [4字节校验和]
-         */
-        while (accumulated_bytes >= 16) {  // 至少要有头(12) + 校验和(4)
+        /* 检查是否有完整的数据包 */
+        while (accumulated_bytes >= 16) {
             ProtocolHeader* header = (ProtocolHeader*)buffer;
             
-            // 验证魔法数字
             if (header->magic != PROTOCOL_MAGIC) {
                 printf("[Driver] 错误: 无效的魔法数字 0x%X\n", header->magic);
                 accumulated_bytes = 0;
                 break;
             }
             
-            // 验证版本
             if (header->version != PROTOCOL_VERSION) {
                 printf("[Driver] 错误: 不支持的协议版本 %d\n", header->version);
                 accumulated_bytes = 0;
                 break;
             }
             
-            // 计算完整数据包大小
-            uint16_t data_len = header->length;  /* 直接使用 length 成员 */
+            uint16_t data_len = header->length;
             int total_packet_size = 12 + data_len + 4;
             
             if (accumulated_bytes < total_packet_size) {
-                // 数据包不完整，继续等待
                 break;
             }
             
-            // 验证校验和
             uint32_t received_checksum = 0;
             memcpy(&received_checksum, buffer + 12 + data_len, 4);
-            
             uint32_t calculated_checksum = calculate_checksum(buffer, 12 + data_len);
             if (received_checksum != calculated_checksum) {
                 printf("[Driver] 错误: 校验和验证失败\n");
@@ -108,18 +105,12 @@ static unsigned int __stdcall handle_client(void* arg) {
             
             printf("[Driver] 收到完整的二进制协议数据包, 命令: %d, 长度: %d\n", header->cmd, data_len);
             
-            // 处理请求并生成响应
-            // 注意：必须传入 total_packet_size（含4字节校验和），否则 verify_and_parse_header
-            // 的长度校验 (PROTOCOL_HEADER_SIZE + hdr->length + 4 != len) 会永远失败
             int response_len = protocol_handle_request(global_printer, buffer, total_packet_size, response_buf, sizeof(response_buf));
-            
             if (response_len > 0) {
-                // 发送响应
                 send(client_sock, (const char*)response_buf, response_len, 0);
                 printf("[Driver] 已发送二进制协议响应, 长度: %d\n", response_len);
             }
             
-            // 清理已处理的数据包
             accumulated_bytes -= total_packet_size;
             if (accumulated_bytes > 0) {
                 memmove(buffer, buffer + total_packet_size, accumulated_bytes);
@@ -129,24 +120,44 @@ static unsigned int __stdcall handle_client(void* arg) {
     
     closesocket(client_sock);
     printf("[Driver] 客户端连接已关闭\n");
+#ifdef _WIN32
     thread_exit(0);
     return 0;
+#else
+    thread_exit(NULL);
+    return NULL;
+#endif
 }
 
 /* 处理打印循环 */
-static void* printer_process_loop(void* arg) {
+#ifdef _WIN32
+static unsigned int __stdcall printer_process_loop(void* arg)
+#else
+static void* printer_process_loop(void* arg)
+#endif
+{
     while (running) {
         if (global_printer != NULL) {
             printer_process_cycle(global_printer);
         }
         sleep_ms(100); /* 每 100ms 处理一个周期 */
     }
+#ifdef _WIN32
     thread_exit(0);
+    return 0;
+#else
+    thread_exit(NULL);
     return NULL;
+#endif
 }
 
 /* 服务器主循环 */
-static unsigned int __stdcall server_loop(void* arg) {
+#ifdef _WIN32
+static unsigned int __stdcall server_loop(void* arg)
+#else
+static void* server_loop(void* arg)
+#endif
+{
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
     
@@ -163,18 +174,23 @@ static unsigned int __stdcall server_loop(void* arg) {
         
         printf("[Driver] 新客户端连接: %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         
-        /* 为每个客户端创建一个线程 */
         thread_t client_thread;
         thread_create(&client_thread, handle_client, client_sock);
         thread_detach(client_thread);
     }
     
+#ifdef _WIN32
     thread_exit(0);
     return 0;
+#else
+    thread_exit(NULL);
+    return NULL;
+#endif
 }
 
 /* 启动驱动服务器 */
 int start_driver_server(int port) {
+    // ... 此函数代码保持不变 ...
     if (running) return -1; /* 已在运行 */
     
     printf("[Driver] 初始化中...\n");

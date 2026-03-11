@@ -18,7 +18,7 @@ echo ""
 echo "📦 [步骤1/4] 编译程序..."
 cd "$PROJECT_DIR/driver"
 echo "   • 编译C驱动..."
-gcc -o printer_driver printer_simulator.c driver_server.c main_driver.c -lpthread 2>/dev/null
+gcc -o printer_driver printer_simulator.c driver_server.c main_driver.c state_machine.c protocol.c protocol_handler.c -lpthread 2>/dev/null
 echo "     ✅ 驱动编译完成"
 
 cd "$PROJECT_DIR/backend"
@@ -54,7 +54,7 @@ echo ""
 
 # 步骤4: 打开浏览器
 echo "🌐 [步骤4/4] 打开前端..."
-FRONTEND_PATH="$PROJECT_DIR/printer_control_improved.html"
+FRONTEND_PATH="$BACKEND_DIR/printer_control_improved.html"
 open "$FRONTEND_PATH" 2>/dev/null || echo "   📁 请手动打开: $FRONTEND_PATH"
 echo ""
 
