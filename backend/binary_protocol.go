@@ -156,12 +156,10 @@ func EncodeStatusResponse(status *StatusResponse, sequence uint32) ([]byte, erro
 
 	// 创建完整数据包
 	header := EncodeHeader(CmdGetStatus, uint16(len(payload)), sequence)
-	checksum := CalculateChecksum(header)
-	checksum ^= CalculateChecksum(payload)
-
 	packet := new(bytes.Buffer)
 	packet.Write(header)
 	packet.Write(payload)
+	checksum := CalculateChecksum(packet.Bytes())
 	binary.Write(packet, binary.LittleEndian, checksum)
 
 	return packet.Bytes(), nil
@@ -177,12 +175,10 @@ func EncodeTaskProgress(progress *TaskProgress) ([]byte, error) {
 
 	payload := buf.Bytes()
 	header := EncodeHeader(CmdDataChunk, uint16(len(payload)), progress.TaskID)
-	checksum := CalculateChecksum(header)
-	checksum ^= CalculateChecksum(payload)
-
 	packet := new(bytes.Buffer)
 	packet.Write(header)
 	packet.Write(payload)
+	checksum := CalculateChecksum(packet.Bytes())
 	binary.Write(packet, binary.LittleEndian, checksum)
 
 	return packet.Bytes(), nil
@@ -205,12 +201,10 @@ func EncodeErrorResponse(errCode uint8, detail string) ([]byte, error) {
 
 	payloadBytes := payload.Bytes()
 	header := EncodeHeader(CmdError, uint16(len(payloadBytes)), 0)
-	checksum := CalculateChecksum(header)
-	checksum ^= CalculateChecksum(payloadBytes)
-
 	packet := new(bytes.Buffer)
 	packet.Write(header)
 	packet.Write(payloadBytes)
+	checksum := CalculateChecksum(packet.Bytes())
 	binary.Write(packet, binary.LittleEndian, checksum)
 
 	return packet.Bytes(), nil

@@ -175,8 +175,17 @@ static void* server_loop(void* arg)
         printf("[Driver] 新客户端连接: %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         
         thread_t client_thread;
-        thread_create(&client_thread, handle_client, client_sock);
-        thread_detach(client_thread);
+        if (thread_create(&client_thread, handle_client, client_sock) == 0) {
+            thread_detach(client_thread);
+        } else {
+            printf("[Driver] 错误：无法创建客户端线程\n");
+#ifdef _WIN32
+            closesocket(*client_sock);
+#else
+            close(*client_sock);
+#endif
+            free(client_sock);
+        }
     }
     
 #ifdef _WIN32
