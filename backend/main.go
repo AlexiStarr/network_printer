@@ -2308,6 +2308,11 @@ func main() {
 	r.HandleFunc("/api/user/delete", handler.DeleteUserHandler).Methods("POST")
 	r.HandleFunc("/api/user/list", handler.ListUsersHandler).Methods("GET")
 
+	// ==================== 启动性能基准代理服务 ====================
+	// BinaryTCPProxy(:9997) 与 JSONHTTPProxy(:9998) 用于受控单变量性能对比实验。
+	go NewBinaryTCPProxy(":9997", "localhost:9999").Start()
+	go NewJSONHTTPProxy(":9998", "localhost:9999").Start()
+
 	// 启动服务器
 	port := 8080
 	addr := fmt.Sprintf(":%d", port)

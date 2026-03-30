@@ -37,7 +37,7 @@ def generate_throughput_chart():
     fig, ax = plt.subplots(figsize=(8, 6))
     
     labels = ['128 B', '256 B', '1 KB']
-    bin_qps = df[df['Protocol'] == 'Binary']['QPS'].values
+    bin_qps = df[df['Protocol'] == 'Binary_TCP']['QPS'].values
     json_qps = df[df['Protocol'] == 'JSON_HTTP']['QPS'].values
     
     x = np.arange(len(labels))
@@ -74,7 +74,7 @@ def generate_latency_chart():
              "P50_ms": [0.45, 5.12],
              "P95_ms": [1.05, 10.3],
              "P99_ms": [2.12, 15.5],
-             "P99.9_ms": [3.50, 22.0]
+             "P999_ms": [3.50, 22.0]
          }
          df = pd.DataFrame(data)
     else:
@@ -84,11 +84,11 @@ def generate_latency_chart():
     
     labels = ['P50', 'P95', 'P99', 'P99.9']
     
-    bin_row = df[df['Protocol'] == 'Binary'].iloc[0]
+    bin_row = df[df['Protocol'] == 'Binary_TCP'].iloc[0]
     json_row = df[df['Protocol'] == 'JSON_HTTP'].iloc[0]
     
-    bin_lat = [bin_row['P50_ms'], bin_row['P95_ms'], bin_row['P99_ms'], bin_row['P99.9_ms']]
-    json_lat = [json_row['P50_ms'], json_row['P95_ms'], json_row['P99_ms'], json_row['P99.9_ms']]
+    bin_lat = [bin_row['P50_ms'], bin_row['P95_ms'], bin_row['P99_ms'], bin_row['P999_ms']]
+    json_lat = [json_row['P50_ms'], json_row['P95_ms'], json_row['P99_ms'], json_row['P999_ms']]
     
     x = np.arange(len(labels))
     ax.plot(x, bin_lat, marker='o', linewidth=2, markersize=8, label='二进制协议 (网络打印机)', color='#2ca02c')
